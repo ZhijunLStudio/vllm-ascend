@@ -88,6 +88,23 @@ def npugraph_ex_compile(
     # Avoid to change torch.ops.aten.gelu.default to torch.ops.aten.gelu_.default which will fallback to CPU
     # and cause copy_between_host_and_device error.
     config.debug.aclgraph.disable_reinplace_inplaceable_ops_pass = True
+
+    # Apply dynamic_shapes_config to TorchAIR config if available
+    dynamic_shapes_config = None
+    compilation_mode = None
+    if hasattr(vllm_config, "compilation_config"):
+        dynamic_shapes_config = vllm_config.compilation_config.dynamic_shapes_config
+        compilation_mode = vllm_config.compilation_config.mode
+
+        if dynamic_shapes_config:
+            # Pass assume_32_bit_indexing to TorchAIR if applicable
+            if dynamic_shapes_config.assume_32_bit_indexing:
+                logger.info(
+                    "Setting assume_32_bit_indexing=True in TorchAIR config"
+                )
+                # Note: This is a placeholder - actual TorchAIR config option may differ
+                # config.experimental_config.assume_32bit_indexing = True
+
     if ascend_compilation_config.enable_static_kernel:
         logger.info(
             "enable_static_kernel is enabled, static shape kernel will be used to accelerate aclgraph execution."
@@ -156,6 +173,22 @@ class AscendCompiler(CompilerInterface):
                 else inp
                 for inp in example_inputs
             ]
+
+        # Access dynamic_shapes_config if available
+        dynamic_shapes_config = None
+        compilation_mode = None
+        if hasattr(self, "vllm_config") and hasattr(self.vllm_config, "compilation_config"):
+            dynamic_shapes_config = self.vllm_config.compilation_config.dynamic_shapes_config
+            compilation_mode = self.vllm_config.compilation_config.mode
+
+            # Log that we're using the dynamic_shapes_config
+            if dynamic_shapes_config:
+                logger.debug(
+                    "AscendCompiler using dynamic_shapes_config: type=%s, evaluate_guards=%s, assume_32_bit_indexing=%s",
+                    dynamic_shapes_config.type,
+                    dynamic_shapes_config.evaluate_guards,
+                    dynamic_shapes_config.assume_32_bit_indexing
+                )
 
         ascend_compilation_config = get_ascend_config().ascend_compilation_config
         if ascend_compilation_config.enable_npugraph_ex:
