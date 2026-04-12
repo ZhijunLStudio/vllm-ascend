@@ -420,7 +420,7 @@ class TestNPUPlatform(TestBase):
         importlib.reload(platform)
         self.platform = platform.NPUPlatform()
 
-        # Test STOCK_TORCH_COMPILE with UNBACKED - should not fallback
+        # Test STOCK_TORCH_COMPILE with UNBACKED - should not fallback (pass through)
         vllm_config.compilation_config.mode = CompilationMode.STOCK_TORCH_COMPILE
         vllm_config.compilation_config.dynamic_shapes_config = MagicMock()
         vllm_config.compilation_config.dynamic_shapes_config.type = DynamicShapesType.UNBACKED
@@ -430,13 +430,14 @@ class TestNPUPlatform(TestBase):
         with patch.object(platform.NPUPlatform, "_fix_incompatible_config"):
             self.platform.check_and_update_config(vllm_config)
 
-        # Type should remain UNBACKED for stock modes
+        # Type should remain UNBACKED for stock modes - handled by vLLM upper layer
         self.assertEqual(vllm_config.compilation_config.dynamic_shapes_config.type, DynamicShapesType.UNBACKED)
-        # evaluate_guards should remain True for stock modes
+        # evaluate_guards should remain True for stock modes - handled by vLLM upper layer
         self.assertTrue(vllm_config.compilation_config.dynamic_shapes_config.evaluate_guards)
 
-        # Test VLLM_COMPILE with UNBACKED - should fallback to BACKED
+        # Test VLLM_COMPILE with UNBACKED - should fallback to BACKED (ACL Graph limitation)
         vllm_config.compilation_config.mode = CompilationMode.VLLM_COMPILE
+        vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.PIECEWISE  # VLLM_COMPILE defaults to PIECEWISE
         vllm_config.compilation_config.dynamic_shapes_config = MagicMock()
         vllm_config.compilation_config.dynamic_shapes_config.type = DynamicShapesType.UNBACKED
         vllm_config.compilation_config.dynamic_shapes_config.evaluate_guards = True
@@ -446,13 +447,39 @@ class TestNPUPlatform(TestBase):
             with patch.object(platform.NPUPlatform, "_fix_incompatible_config"):
                 self.platform.check_and_update_config(vllm_config)
 
-            # Should warn and modify the config for VLLM_COMPILE mode
-            self.assertTrue(any("UNBACKED dynamic shapes type may not be fully supported" in msg for msg in cm.output))
-            self.assertTrue(any("evaluate_guards=True requires torch.compile guard" in msg for msg in cm.output))
+            # Should warn about VLLM_COMPILE incompatibility
+            self.assertTrue(any("UNBACKED dynamic shapes type is not compatible with VLLM_COMPILE" in msg for msg in cm.output))
+            self.assertTrue(any("evaluate_guards=True is not compatible with VLLM_COMPILE" in msg for msg in cm.output))
             # Type should be changed to BACKED
             self.assertEqual(vllm_config.compilation_config.dynamic_shapes_config.type, DynamicShapesType.BACKED)
             # evaluate_guards should be set to False
             self.assertFalse(vllm_config.compilation_config.dynamic_shapes_config.evaluate_guards)
+
+        # Test DYNAMO_TRACE_ONCE with UNBACKED - should not fallback (pass through)
+        vllm_config.compilation_config.mode = CompilationMode.DYNAMO_TRACE_ONCE
+        vllm_config.compilation_config.dynamic_shapes_config = MagicMock()
+        vllm_config.compilation_config.dynamic_shapes_config.type = DynamicShapesType.UNBACKED
+        vllm_config.compilation_config.dynamic_shapes_config.evaluate_guards = False
+        vllm_config.compilation_config.dynamic_shapes_config.assume_32_bit_indexing = False
+
+        with patch.object(platform.NPUPlatform, "_fix_incompatible_config"):
+            self.platform.check_and_update_config(vllm_config)
+
+        # Type should remain UNBACKED - pass through to vLLM upper layer
+        self.assertEqual(vllm_config.compilation_config.dynamic_shapes_config.type, DynamicShapesType.UNBACKED)
+
+        # Test NONE mode with UNBACKED - should not fallback (pass through, like CUDA platform)
+        vllm_config.compilation_config.mode = CompilationMode.NONE
+        vllm_config.compilation_config.dynamic_shapes_config = MagicMock()
+        vllm_config.compilation_config.dynamic_shapes_config.type = DynamicShapesType.UNBACKED
+        vllm_config.compilation_config.dynamic_shapes_config.evaluate_guards = False
+        vllm_config.compilation_config.dynamic_shapes_config.assume_32_bit_indexing = False
+
+        with patch.object(platform.NPUPlatform, "_fix_incompatible_config"):
+            self.platform.check_and_update_config(vllm_config)
+
+        # Type should remain UNBACKED - pass through to vLLM upper layer
+        self.assertEqual(vllm_config.compilation_config.dynamic_shapes_config.type, DynamicShapesType.UNBACKED)
 
     @pytest.mark.skip("Revert me when vllm support setting cudagraph_mode on oot platform")
     @patch("vllm_ascend.quantization.utils.maybe_auto_detect_quantization")

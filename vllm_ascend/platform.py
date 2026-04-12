@@ -442,34 +442,44 @@ class NPUPlatform(Platform):
                     compilation_config.mode
                 )
 
-        # Handle dynamic_shapes_config - pass through to compiler for STOCK_TORCH_COMPILE/DYNAMO_TRACE_ONCE
+        # Handle dynamic_shapes_config
+        # Unlike CUDA platform, Ascend NPU has limitations with ACL Graph for dynamic shapes.
+        # For VLLM_COMPILE mode, ACL Graph captures static graphs, so UNBACKED dynamic shapes
+        # and evaluate_guards are not compatible. We provide warnings and fallbacks.
+        # For STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE, we pass through as-is since they
+        # use standard torch.compile which handles these configurations natively.
         from vllm.config.compilation import DynamicShapesType
         dynamic_shapes_config = compilation_config.dynamic_shapes_config
 
-        if compilation_config.mode in [CompilationMode.STOCK_TORCH_COMPILE, CompilationMode.DYNAMO_TRACE_ONCE]:
-            # For these modes, pass through the config without modification
-            # dynamic_shapes_config is handled by vLLM's TorchCompileWithNoGuardsWrapper
-            pass
-        else:
-            # For NONE and VLLM_COMPILE, keep the existing conservative behavior
+        if compilation_config.mode == CompilationMode.VLLM_COMPILE:
+            # VLLM_COMPILE uses ACL Graph which captures static graphs
+            # UNBACKED dynamic shapes are not compatible with ACL Graph's static capture
             if dynamic_shapes_config.type == DynamicShapesType.UNBACKED:
                 logger.warning(
-                    "UNBACKED dynamic shapes type may not be fully supported on Ascend NPU. "
-                    "ACLGraphWrapper handles dynamic shapes at runtime via multi-graph capture. "
-                    "Falling back to BACKED."
+                    "UNBACKED dynamic shapes type is not compatible with VLLM_COMPILE mode's "
+                    "ACL Graph static capture. Falling back to BACKED. "
+                    "Consider using STOCK_TORCH_COMPILE or DYNAMO_TRACE_ONCE for UNBACKED support."
                 )
                 dynamic_shapes_config.type = DynamicShapesType.BACKED
 
             if dynamic_shapes_config.evaluate_guards:
                 logger.warning(
-                    "evaluate_guards=True requires torch.compile guard infrastructure "
-                    "which is not available in Ascend's ACLGraphWrapper path. "
-                    "Setting to False."
+                    "evaluate_guards=True is not compatible with VLLM_COMPILE mode's "
+                    "ACL Graph path. Setting to False. "
+                    "Consider using STOCK_TORCH_COMPILE or DYNAMO_TRACE_ONCE for evaluate_guards support."
                 )
                 dynamic_shapes_config.evaluate_guards = False
 
+        # For NONE, STOCK_TORCH_COMPILE, and DYNAMO_TRACE_ONCE modes,
+        # dynamic_shapes_config is handled by vLLM's TorchCompileWithNoGuardsWrapper
+        # and decorators.py - we pass through without modification.
+        # This matches the behavior of CUDA platform.
+
         if dynamic_shapes_config.assume_32_bit_indexing:
-            logger.info("assume_32_bit_indexing is enabled. Verify Ascend NPU compatibility.")
+            logger.info(
+                "assume_32_bit_indexing is enabled. "
+                "This is passed to torch._inductor.config for Inductor backend compatibility."
+            )
 
         # TODO: Remove this check when ACL Graph supports ASCEND_LAUNCH_BLOCKING=1
         # Then, we will have to discuss the error handling strategy and user experience
