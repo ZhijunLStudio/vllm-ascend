@@ -144,6 +144,25 @@
 - ✅ TorchAIR 安装成功（从 gitcode.com/Ascend/torchair 克隆并安装）
 - ✅ PyTorch 2.9.0 + torch-npu 2.9.0 环境就绪
 
+#### 端到端测试结果（2026-04-12）
+
+使用 Qwen2.5-0.5B-Instruct 模型在 Ascend 910B2C NPU 上测试所有 `dynamic_shapes_config` 配置组合：
+
+| 测试 | 模式 | type | evaluate_guards | 结果 |
+|------|------|------|-----------------|------|
+| 1 | DYNAMO_TRACE_ONCE | unbacked | False | ✅ 成功 (191.04 toks/s) |
+| 2 | STOCK_TORCH_COMPILE | backed | True | ✅ 成功 (151.10 toks/s) |
+| 3 | DYNAMO_TRACE_ONCE | backed | False | ✅ 成功 (192.24 toks/s) |
+| 4 | VLLM_COMPILE | unbacked | True | ✅ 成功 (252.32 toks/s) - 自动回退 |
+| 5 | STOCK_TORCH_COMPILE | unbacked | False | ✅ 成功 (153.81 toks/s) |
+| 6 | DYNAMO_TRACE_ONCE | backed + assume_32_bit_indexing | False | ✅ 成功 |
+
+**关键发现**：
+- UNBACKED 模式需要 `VLLM_USE_BYTECODE_HOOK=0` 环境变量
+- VLLM_COMPILE 模式下 UNBACKED 会自动回退到 BACKED，并发出警告
+- STOCK_TORCH_COMPILE/DYNAMO_TRACE_ONCE 模式直接传递配置，不做修改
+- 所有配置组合均能正常生成文本
+
 ---
 
 ## 设计原则
