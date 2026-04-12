@@ -125,10 +125,16 @@ class NPUPlatform(Platform):
     @classmethod
     def get_compile_backend(self) -> str:
         """
-        Get the custom compile backend. Previously, we used EagerAdaptor by default.
-        To use graph fusion operations, we defined our own backend compiler.
+        Get the custom compile backend.
+
+        For STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE modes, we return "eager"
+        because AscendCompiler is a CompilerInterface that needs to be used
+        via VllmBackend (which is only used in VLLM_COMPILE mode).
+
+        For VLLM_COMPILE mode, the backend is handled by VllmBackend which
+        uses AscendCompiler internally via the OOT compiler mechanism.
         """
-        return "vllm_ascend.compilation.compiler_interface.AscendCompiler"
+        return "eager"
 
     @classmethod
     def pre_register_and_update(cls, parser: FlexibleArgumentParser | None = None) -> None:
