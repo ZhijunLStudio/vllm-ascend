@@ -359,8 +359,8 @@ class TestNPUPlatform(TestBase):
             with patch.object(platform.NPUPlatform, "_fix_incompatible_config"):
                 self.platform.check_and_update_config(vllm_config)
 
-            # Should log info about experimental mode
-            self.assertTrue(any("DYNAMO_TRACE_ONCE compilation mode" in msg for msg in cm.output))
+            # Should log info about enabled mode
+            self.assertTrue(any("DYNAMO_TRACE_ONCE compilation mode enabled" in msg for msg in cm.output))
             # Mode should remain DYNAMO_TRACE_ONCE
             self.assertEqual(vllm_config.compilation_config.mode, CompilationMode.DYNAMO_TRACE_ONCE)
             # cudagraph_mode should be set to NONE by default
@@ -374,8 +374,8 @@ class TestNPUPlatform(TestBase):
             with patch.object(platform.NPUPlatform, "_fix_incompatible_config"):
                 self.platform.check_and_update_config(vllm_config)
 
-            # Should log info about experimental mode
-            self.assertTrue(any("STOCK_TORCH_COMPILE compilation mode" in msg for msg in cm.output))
+            # Should log info about enabled mode
+            self.assertTrue(any("STOCK_TORCH_COMPILE compilation mode enabled" in msg for msg in cm.output))
             # Mode should remain STOCK_TORCH_COMPILE
             self.assertEqual(vllm_config.compilation_config.mode, CompilationMode.STOCK_TORCH_COMPILE)
 
@@ -401,10 +401,10 @@ class TestNPUPlatform(TestBase):
     @patch("vllm_ascend.utils.get_ascend_device_type", return_value=AscendDeviceType.A3)
     @patch("vllm_ascend.ascend_config.init_ascend_config")
     @patch("vllm_ascend.core.recompute_scheduler.RecomputeSchedulerConfig.initialize_from_config")
-    def test_check_and_update_config_dynamic_shapes_for_experimental_modes(
+    def test_check_and_update_config_dynamic_shapes_for_stock_modes(
         self, mock_init_recompute, mock_init_ascend, mock_soc_version, mock_auto_detect
     ):
-        """Test that dynamic_shapes_config is passed through for experimental modes."""
+        """Test that dynamic_shapes_config is passed through for stock compile modes."""
         mock_init_ascend.return_value = TestNPUPlatform.mock_vllm_ascend_config()
         vllm_config = TestNPUPlatform.mock_vllm_config()
         vllm_config.model_config.enforce_eager = False
@@ -427,17 +427,13 @@ class TestNPUPlatform(TestBase):
         vllm_config.compilation_config.dynamic_shapes_config.evaluate_guards = True
         vllm_config.compilation_config.dynamic_shapes_config.assume_32_bit_indexing = True
 
-        with self.assertLogs(logger="vllm", level="INFO") as cm:
-            with patch.object(platform.NPUPlatform, "_fix_incompatible_config"):
-                self.platform.check_and_update_config(vllm_config)
+        with patch.object(platform.NPUPlatform, "_fix_incompatible_config"):
+            self.platform.check_and_update_config(vllm_config)
 
-            # Should log info but NOT modify the config
-            self.assertTrue(any("UNBACKED dynamic shapes type" in msg for msg in cm.output))
-            self.assertTrue(any("evaluate_guards=True" in msg for msg in cm.output))
-            # Type should remain UNBACKED for experimental modes
-            self.assertEqual(vllm_config.compilation_config.dynamic_shapes_config.type, DynamicShapesType.UNBACKED)
-            # evaluate_guards should remain True for experimental modes
-            self.assertTrue(vllm_config.compilation_config.dynamic_shapes_config.evaluate_guards)
+        # Type should remain UNBACKED for stock modes
+        self.assertEqual(vllm_config.compilation_config.dynamic_shapes_config.type, DynamicShapesType.UNBACKED)
+        # evaluate_guards should remain True for stock modes
+        self.assertTrue(vllm_config.compilation_config.dynamic_shapes_config.evaluate_guards)
 
         # Test VLLM_COMPILE with UNBACKED - should fallback to BACKED
         vllm_config.compilation_config.mode = CompilationMode.VLLM_COMPILE

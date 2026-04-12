@@ -307,7 +307,7 @@ class NPUPlatform(Platform):
             # Get the enum name for logging
             mode_name = compilation_config.mode.name
             logger.info(
-                "%s compilation mode on Ascend NPU. Note that this is experimental.",
+                "%s compilation mode enabled on Ascend NPU.",
                 mode_name
             )
             # For STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE, we don't use ACL Graph by default
@@ -379,10 +379,9 @@ class NPUPlatform(Platform):
                 update_aclgraph_sizes(vllm_config)
                 ascend_config.ascend_compilation_config.enable_npugraph_ex = False
             else:
-                # For STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE, allow PIECEWISE but log a warning
-                logger.warning(
-                    "PIECEWISE cudagraph_mode with %s compilation mode is experimental on Ascend NPU. "
-                    "Some features may not work as expected.",
+                # For STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE, allow PIECEWISE
+                logger.info(
+                    "PIECEWISE cudagraph_mode with %s compilation mode on Ascend NPU.",
                     compilation_config.mode
                 )
                 # Don't force use_inductor=False for these modes - let them use inductor if available
@@ -410,10 +409,9 @@ class NPUPlatform(Platform):
                 """
                 logger.warning(warning_message)
             else:
-                # For STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE, allow but log warning
-                logger.warning(
-                    "%s cudagraph_mode with %s compilation mode is experimental on Ascend NPU. "
-                    "Some features may not work as expected.",
+                # For STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE, allow
+                logger.info(
+                    "%s cudagraph_mode with %s compilation mode on Ascend NPU.",
                     compilation_config.cudagraph_mode,
                     compilation_config.mode
                 )
@@ -440,17 +438,8 @@ class NPUPlatform(Platform):
 
         if compilation_config.mode in [CompilationMode.STOCK_TORCH_COMPILE, CompilationMode.DYNAMO_TRACE_ONCE]:
             # For these modes, pass through the config without modification
-            # but still log info about experimental status
-            if dynamic_shapes_config.type == DynamicShapesType.UNBACKED:
-                logger.info(
-                    "UNBACKED dynamic shapes type with %s compilation mode is experimental on Ascend NPU.",
-                    compilation_config.mode
-                )
-            if dynamic_shapes_config.evaluate_guards:
-                logger.info(
-                    "evaluate_guards=True with %s compilation mode is experimental on Ascend NPU.",
-                    compilation_config.mode
-                )
+            # dynamic_shapes_config is handled by vLLM's TorchCompileWithNoGuardsWrapper
+            pass
         else:
             # For NONE and VLLM_COMPILE, keep the existing conservative behavior
             if dynamic_shapes_config.type == DynamicShapesType.UNBACKED:
