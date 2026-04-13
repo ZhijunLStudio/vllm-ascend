@@ -95,7 +95,11 @@ class NPUPlatform(Platform):
     _enum = PlatformEnum.OOT
     device_name: str = "npu"
     device_type: str = "npu"
-    simple_compile_backend: str = "eager"  # Disable torch.compile()
+    # Ascend NPU uses torch_npu's Inductor backend ("npu") for
+    # STOCK_TORCH_COMPILE / DYNAMO_TRACE_ONCE modes. For VLLM_COMPILE mode,
+    # the actual compilation is handled by VllmBackend → AscendCompiler →
+    # TorchAIR ACL Graph, not by this attribute.
+    simple_compile_backend: str = "npu"
     ray_device_key: str = "NPU"
     device_control_env_var: str = "ASCEND_RT_VISIBLE_DEVICES"
     dispatch_key: str = "PrivateUse1"
@@ -125,16 +129,16 @@ class NPUPlatform(Platform):
     @classmethod
     def get_compile_backend(self) -> str:
         """
-        Get the custom compile backend.
+        Return the torch.compile backend string for Ascend NPU.
 
-        For STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE modes, we return "eager"
-        because AscendCompiler is a CompilerInterface that needs to be used
-        via VllmBackend (which is only used in VLLM_COMPILE mode).
-
-        For VLLM_COMPILE mode, the backend is handled by VllmBackend which
-        uses AscendCompiler internally via the OOT compiler mechanism.
+        - STOCK_TORCH_COMPILE / DYNAMO_TRACE_ONCE: returned as-is,
+          used as torch.compile(model, backend='npu'). torch_npu provides
+          an Inductor-based backend registered as "npu".
+        - VLLM_COMPILE: set as oot_compiler for graph fusion pass manager.
+          The actual compilation is handled by VllmBackend → AscendCompiler
+          → TorchAIR ACL Graph (not by this backend string).
         """
-        return "eager"
+        return "npu"
 
     @classmethod
     def pre_register_and_update(cls, parser: FlexibleArgumentParser | None = None) -> None:
@@ -369,11 +373,16 @@ class NPUPlatform(Platform):
             # Only force mode to NONE for VLLM_COMPILE mode
             # For STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE, keep the mode
             if compilation_config.mode == CompilationMode.VLLM_COMPILE:
+                compilation_config.backend = "eager"
                 compilation_config.mode = CompilationMode.NONE
             ascend_config.ascend_compilation_config.enable_npugraph_ex = False
         elif compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE:
             if compilation_config.mode == CompilationMode.VLLM_COMPILE:
                 logger.info("PIECEWISE compilation enabled on NPU. use_inductor not supported - using only ACL Graph mode")
+                # VLLM_COMPILE uses VllmBackend → AscendCompiler → TorchAIR ACL Graph.
+                # Set backend to "eager" so make_compiler() uses EagerAdaptor (actual
+                # compilation is done by AscendCompiler, not Inductor).
+                compilation_config.backend = "eager"
                 compilation_config.set_splitting_ops_for_v1(
                     all2all_backend=vllm_config.parallel_config.all2all_backend,
                     data_parallel_size=vllm_config.parallel_config.data_parallel_size,
@@ -403,6 +412,7 @@ class NPUPlatform(Platform):
                 logger.info(
                     "FULL_DECODE_ONLY compilation enabled on NPU. use_inductor not supported - using only ACL Graph mode"
                 )
+                compilation_config.backend = "eager"
                 compilation_config.use_inductor = False
                 compilation_config.splitting_ops = []
                 warning_message = """\033[91m
@@ -431,6 +441,7 @@ class NPUPlatform(Platform):
                 logger.info(
                     "%s cudagraph_mode is not support on NPU. falling back to NONE", compilation_config.cudagraph_mode
                 )
+                compilation_config.backend = "eager"
                 compilation_config.cudagraph_mode = CUDAGraphMode.NONE
                 compilation_config.mode = CompilationMode.NONE
                 ascend_config.ascend_compilation_config.enable_npugraph_ex = False
