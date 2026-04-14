@@ -12,7 +12,7 @@
 #       CUDA 机子会自动从 HuggingFace 下载模型。
 # ============================================================
 
-MODEL="Qwen/Qwen2.5-0.5B-Instruct"
+MODEL="/data-ssd/lizhijun/models/Qwen/Qwen2.5-0.5B-Instruct"
 MAX_TOKENS=32
 MAX_MODEL_LEN=256
 MAX_NUM_SEQS=4
@@ -262,7 +262,7 @@ echo ""
 
 run_test "VLLM_COMPILE + UNBACKED" \
     '{"mode": "VLLM_COMPILE", "dynamic_shapes_config": {"type": "unbacked", "evaluate_guards": false}}' \
-    ""
+    "VLLM_USE_BYTECODE_HOOK=0"
 
 run_test "VLLM_COMPILE + evaluate_guards=True" \
     '{"mode": "VLLM_COMPILE", "dynamic_shapes_config": {"evaluate_guards": true}}' \

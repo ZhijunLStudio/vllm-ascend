@@ -317,17 +317,60 @@ torch._inductor.config for Inductor backend compatibility.
 - `test_check_and_update_config_enforce_eager_mode`：验证 enforce_eager 强制 NONE
 - `test_check_and_update_config_preserves_platform_default_max_input`：验证 max_cudagraph_capture_size 默认值
 
-### 6.5 CUDA 对照测试结果（待在 CUDA 机子上实测）
+### 6.5 CUDA 对照测试结果（A800 实测）
 
-> **注意**：使用 `run_compilation_tests_cuda.sh` 在 CUDA GPU 机子上运行 vLLM 原版，结果填入此节。CUDA 测试数据用于与 6.1 NPU 数据进行逐项对比，填入第七章对比表。
+**测试环境**：
+- GPU: NVIDIA A800-SXM4-80GB (CUDA_VISIBLE_DEVICES=4)
+- vLLM 版本: 0.1.dev13378+g9e138cb01 (本地源码安装)
+- Python: conda vllm17 环境
+- 模型: Qwen2.5-0.5B-Instruct (本地路径 `/data-ssd/lizhijun/models/Qwen/Qwen2.5-0.5B-Instruct`)
+- 测试脚本: `run_compilation_tests_cuda.sh` (与 NPU 版本测试用例完全对齐)
 
-<!-- TODO: 在 CUDA 机子运行 ./run_compilation_tests_cuda.sh，将结果填入此处 -->
+**测试结果（12/15 通过）**：
+
+| # | 测试 | 吞吐量 (toks/s) | 输出 tokens | 状态 | 备注 |
+|---|------|-----------------|-------------|------|------|
+| 1 | NONE (纯 eager) | 141.29 | 96 | PASS | baseline |
+| 2 | VLLM_COMPILE (CUDA Graph) | 507.24 | 96 | PASS | CUDA Graph 最佳性能 |
+| 3 | STOCK_TORCH_COMPILE | 185.96 | 96 | PASS | torch.compile + inductor |
+| 4 | DYNAMO_TRACE_ONCE | 191.28 | 96 | PASS | 单次 trace |
+| 5 | STOCK + BACKED | 189.48 | 96 | PASS | |
+| 6 | DYNAMO + UNBACKED | - | - | FAIL | `torch._dynamo.exc.UserError: Could not guard on data-dependent expression` |
+| 7 | STOCK + evaluate_guards=True | 153.61 | 96 | PASS | |
+| 8 | STOCK + UNBACKED | 191.60 | 96 | PASS | |
+| 9 | DYNAMO + assume_32_bit | 197.90 | 96 | PASS | |
+| 10 | STOCK + BACKED_SIZE_OBLIVIOUS | 191.66 | 96 | PASS | |
+| 11 | VLLM_COMPILE + UNBACKED | - | - | FAIL | `torch._dynamo.exc.UserError` (CUDA Graph 静态限制) |
+| 12 | VLLM_COMPILE + evaluate_guards=True | 472.79 | 96 | PASS | |
+| 13 | DYNAMO + UNBACKED | - | - | FAIL | 同 test_6，torch._dynamo 限制 |
+| 14 | NONE + BACKED | 165.36 | 96 | PASS | |
+| 15 | 非法 mode=INVALID | - | - | PASS | 预期失败，pydantic 正确报错 |
+
+**关键发现**：
+- **Tests 6/11/13 失败原因**：CUDA 侧 vLLM dev 版本对 UNBACKED dynamic shapes 有真实限制
+  - `DYNAMO_TRACE_ONCE + UNBACKED`：`torch._dynamo.exc.UserError: Could not guard on data-dependent expression`
+  - `VLLM_COMPILE + UNBACKED`：CUDA Graph 需要静态形状，与 UNBACKED 冲突
+- **性能对比**：VLLM_COMPILE (CUDA Graph) 性能最佳 (507.24 toks/s)，相对 NONE 3.59x 加速
+- **NPU vs CUDA 差异**：NPU 侧 VLLM_COMPILE 会自动将 UNBACKED 降级为 BACKED，CUDA 侧直接报错
 
 ---
 
 ## 七、CUDA vs NPU 行为对比
 
-> **吞吐量数据待补充**：以下行为对比基于代码分析。CUDA 端实际吞吐量数据待 `run_compilation_tests_cuda.sh` 实测后填入。
+**测试环境**：
+- **CUDA**: NVIDIA A800-SXM4-80GB，vLLM 0.1.dev13378+g9e138cb01，conda vllm17 环境
+- **NPU**: Ascend 910B2C，vLLM Ascend 插件，Qwen2.5-0.5B-Instruct
+
+**吞吐量对比**：
+
+| 编译模式 | CUDA (A800) toks/s | NPU (910B) toks/s | CUDA/NPU 比率 |
+|---------|-------------------|-------------------|---------------|
+| NONE (纯 eager) | 141.29 | 100.12 | 1.41x |
+| VLLM_COMPILE (Graph) | 507.24 | 187.87 | 2.70x |
+| STOCK_TORCH_COMPILE | 185.96 | 101.53 | 1.83x |
+| DYNAMO_TRACE_ONCE | 191.28 | 126.52 | 1.51x |
+
+**行为对比**：
 
 | 测试场景 | CUDA (vLLM) | NPU (vLLM Ascend) | 行为差异 |
 |----------|-------------|-------------------|---------|
@@ -336,12 +379,25 @@ torch._inductor.config for Inductor backend compatibility.
 | `mode=STOCK_TORCH_COMPILE` | torch.compile + inductor | torch.compile + npu (torch_npu Inductor) | 后端名称不同，机制一致 |
 | `mode=DYNAMO_TRACE_ONCE` | 单次 trace | 单次 trace | 一致 |
 | `type=BACKED` | 正常 | 正常 | 一致 |
-| `type=UNBACKED` | 正常 | 正常（VLLM_COMPILE 下回退） | VLLM_COMPILE 有差异 |
+| `type=UNBACKED` | **报错** (DYNAMO/VLLM_COMPILE) | 正常（VLLM_COMPILE 下自动回退到 BACKED） | **关键差异** |
 | `evaluate_guards=True` | 正常 | 正常（VLLM_COMPILE 下设 False） | VLLM_COMPILE 有差异 |
 | `assume_32_bit_indexing` | 传给 Inductor | 传给 torch_npu Inductor | 一致 |
 
-**STOCK_TORCH_COMPILE 的 NPU 限制说明**：
-在 CUDA 平台上，STOCK_TORCH_COMPILE 使用 PyTorch 原生 Inductor 后端（`"inductor"`）进行算子融合和代码生成。在 NPU 平台上，`get_compile_backend()` 返回 `"npu"`——这是 torch_npu 提供的基于 Inductor 的编译后端，`torch.compile(model, backend='npu')` 可正常工作。VLLM_COMPILE 模式下通过 `compilation_config.backend = "eager"` 绕过 Inductor 路径，由 AscendCompiler → TorchAIR ACL Graph 接管编译。
+**关键差异说明**：
+
+1. **UNBACKED dynamic shapes**：
+   - **CUDA**: `DYNAMO_TRACE_ONCE + UNBACKED` 和 `VLLM_COMPILE + UNBACKED` 均报错
+     - DYNAMO: `torch._dynamo.exc.UserError: Could not guard on data-dependent expression`
+     - VLLM_COMPILE: CUDA Graph 需要静态形状，与 UNBACKED 冲突
+   - **NPU**: VLLM_COMPILE 模式下自动将 UNBACKED 降级为 BACKED（友好降级），DYNAMO/STOCK 模式直接透传
+
+2. **性能差异**：
+   - CUDA A800 整体性能显著高于 NPU 910B（1.4x-2.7x）
+   - VLLM_COMPILE 模式在 CUDA 上加速比更高（3.59x vs 1.88x）
+
+**STOCK_TORCH_COMPILE 的后端差异**：
+- CUDA: 使用 PyTorch 原生 Inductor 后端 (`"inductor"`)
+- NPU: 使用 torch_npu 提供的 Inductor-based 后端 (`"npu"`)
 
 ---
 
