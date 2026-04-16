@@ -67,12 +67,14 @@ def build_tree_attn_mask_gpu(
         row = i + 1  # draft token 的 position (root 是 position 0)
         # root token 始终可见
         mask[row][0] = 0
+        # 自己始终可见
+        mask[row][row] = 0
         # 该 draft token 的所有祖先节点可见
         for j, other_choice in enumerate(tree_choices):
             col = j + 1
             # choice 的前缀如果是 other_choice，或 other_choice 的前缀是 choice
             # 则 row 可以 attend to col
-            if _is_ancestor(other_choice, choice) or _is_ancestor(choice, other_choice):
+            if choice == other_choice or _is_ancestor(other_choice, choice) or _is_ancestor(choice, other_choice):
                 mask[row][col] = 0
             else:
                 mask[row][col] = float("-inf")
@@ -114,18 +116,18 @@ def build_tree_mask_int8(
     0 = attend, non-0 = block
     """
     mask = torch.ones((pad_size, pad_size), dtype=torch.int8)
-    # Root token attends to itself
-    mask[0][0] = 0
+    # Root token attends to all (it's the prompt context prefix)
+    mask[0, :tree_len] = 0
     for i, choice in enumerate(tree_choices):
         row = i + 1
         # Root always visible
         mask[row][0] = 0
         # Self
         mask[row][row] = 0
-        # Ancestors and descendants
+        # Ancestors, descendants, and self
         for j, other_choice in enumerate(tree_choices):
             col = j + 1
-            if _is_ancestor(other_choice, choice) or _is_ancestor(choice, other_choice):
+            if choice == other_choice or _is_ancestor(other_choice, choice) or _is_ancestor(choice, other_choice):
                 mask[row][col] = 0
     return mask
 
@@ -162,19 +164,16 @@ def test_1_tree_mask_construction() -> dict:
 
     # 验证基本属性
     errors = []
-    # Root (row 0) should only attend to itself
-    if gpu_mask[0][0] != 0:
-        errors.append("Root should attend to itself")
-    for j in range(1, tree_len):
-        if gpu_mask[0][j] == 0:
-            errors.append(f"Root should NOT attend to draft token {j}")
-
-    # Each draft token should attend to root
+    # Root (row 0) is the prompt token, should attend to all draft tokens (causal prefix)
+    # 所以 root 行全部为 0 是正确的
+    for j in range(tree_len):
+        if gpu_mask[0][j] != 0:
+            errors.append(f"Root should attend to all tokens including draft token {j}")
+    # 每个 draft token 应该 attend to root
     for i in range(1, tree_len):
         if gpu_mask[i][0] != 0:
             errors.append(f"Draft token {i} should attend to root")
-
-    # Each draft token should attend to itself
+    # 每个 draft token 应该 attend to itself
     for i in range(1, tree_len):
         if gpu_mask[i][i] != 0:
             errors.append(f"Draft token {i} should attend to itself")
@@ -422,16 +421,29 @@ def test_4_eagle_tree_data() -> dict:
         print(f"  Level {depth}: {len(depth_groups[depth])} tokens")
 
     # 模拟每层的 forward 和 sampling
-    simulated_tokens = {0: [42]}  # root token
+    simulated_tokens = {0: [42]}  # root token (position 0)
+    # 建立 choice → position 的映射
+    choice_to_pos = {}
+    for i, choice in enumerate(tree_choices):
+        choice_to_pos[choice] = i + 1  # position 0 是 root
     total_draft_tokens = 0
 
+    # 按深度顺序处理
     for depth in sorted(depth_groups.keys()):
         level_tokens = []
         for idx, choice in depth_groups[depth]:
-            # 模拟从 parent token 采样
-            parent_token = simulated_tokens[depth - 1][choice[-1]] if depth > 0 else 42
-            # 模拟采样（实际是模型 forward + sample）
-            draft_token = (parent_token * 7 + idx + depth) % vocab_size
+            if depth == 1:
+                # Level 1: parent is root
+                parent_pos = 0
+            else:
+                # Parent is choice 去掉最后一个元素
+                parent_choice = choice[:-1]
+                parent_pos = choice_to_pos[parent_choice]
+            # 使用 parent position 作为 parent token id（简化模拟）
+            parent_token_id = simulated_tokens.get(depth - 1, [42])[0] if depth == 1 else \
+                simulated_tokens[depth - 1][parent_choice[-1]] if depth > 1 else 42
+            # 简单模拟采样
+            draft_token = (parent_pos * 7 + idx + depth) % vocab_size
             level_tokens.append(draft_token)
             total_draft_tokens += 1
 

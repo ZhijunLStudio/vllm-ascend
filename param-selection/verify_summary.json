@@ -1,0 +1,32 @@
+{
+  "all_passed": true,
+  "tests": {
+    "test_1": {
+      "test": "tree_mask_construction",
+      "passed": true
+    },
+    "test_2": {
+      "test": "npu_mask_conversion",
+      "passed": true
+    },
+    "test_3": {
+      "test": "complex_tree_structure",
+      "passed": true
+    },
+    "test_4": {
+      "test": "eagle_tree_data",
+      "passed": true
+    },
+    "test_5": {
+      "test": "metadata_builder",
+      "passed": true
+    }
+  },
+  "output_files": [
+    "verify_tree_mask_construction.json",
+    "verify_npu_mask_conversion.json",
+    "verify_complex_tree_structure.json",
+    "verify_eagle_tree_data.json",
+    "verify_metadata_builder.json"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "test": "npu_mask_conversion",
+  "tree_spec": "[(0,), (0, 0), (0, 1), (0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1)]",
+  "tree_len": 8,
+  "gpu_mask_shape": [
+    8,
+    8
+  ],
+  "npu_mask_shape": [
+    2048,
+    2048
+  ],
+  "npu_mask_dtype": "torch.int8",
+  "npu_pad_size": 2048,
+  "conversion_valid": true,
+  "direct_build_matches_conversion": true,
+  "error_count": 0,
+  "errors_sample": [],
+  "passed": true
+}

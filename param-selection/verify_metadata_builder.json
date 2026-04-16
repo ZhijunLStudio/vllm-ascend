@@ -1,0 +1,54 @@
+{
+  "test": "metadata_builder",
+  "tree_spec": "[(0,), (0, 0), (0, 1), (0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1)]",
+  "passed": true,
+  "errors": [],
+  "metadata": {
+    "batch_size": 2,
+    "tree_len": 8,
+    "num_heads": 32,
+    "head_dim": 128,
+    "block_size": 16,
+    "seq_lens": [
+      64,
+      128
+    ],
+    "context_lens": [
+      64,
+      128
+    ],
+    "block_table_shape": [
+      2,
+      16
+    ],
+    "npu_mask_shape": [
+      2048,
+      2048
+    ],
+    "npu_mask_dtype": "torch.int8",
+    "actual_seq_lengths": [
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      129,
+      130,
+      131,
+      132,
+      133,
+      134,
+      135,
+      136
+    ],
+    "actual_seq_kv": [
+      72,
+      136
+    ],
+    "tree_bias_attend_ratio": 0.6562,
+    "npu_mask_attend_ratio": 0.6562
+  }
+}

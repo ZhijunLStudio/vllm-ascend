@@ -1,0 +1,15 @@
+{
+  "test": "complex_tree_structure",
+  "tree_choices_count": 15,
+  "tree_len": 16,
+  "max_depth": 4,
+  "attend_ratio": 0.4453,
+  "attend_count": 114,
+  "total_positions": 256,
+  "npu_mask_shape": [
+    2048,
+    2048
+  ],
+  "passed": true,
+  "errors": []
+}

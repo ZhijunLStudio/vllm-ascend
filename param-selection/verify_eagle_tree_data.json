@@ -1,0 +1,70 @@
+{
+  "test": "eagle_tree_data",
+  "tree_spec": "[(0,), (0, 0), (0, 1), (0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1)]",
+  "tree_choices": [
+    [
+      0
+    ],
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1
+    ],
+    [
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      1,
+      1
+    ]
+  ],
+  "num_tree_choices": 7,
+  "max_depth": 3,
+  "depth_groups": {
+    "1": 1,
+    "2": 2,
+    "3": 4
+  },
+  "draft_token_ids_list_lengths": [
+    1,
+    2,
+    4
+  ],
+  "total_draft_tokens": 7,
+  "simulated_tokens_sample": {
+    "0": [
+      42
+    ],
+    "1": [
+      1
+    ],
+    "2": [
+      10,
+      11
+    ],
+    "3": [
+      20,
+      21,
+      29,
+      30
+    ]
+  },
+  "passed": true,
+  "errors": []
+}
