@@ -129,6 +129,17 @@ ps aux | grep "api_server\|VLLM::EngineCore" | grep -v grep | awk '{print $2}' |
 
 - CUDA GPU 上 tree speculative decoding 带来了可测量的加速（+13.2% ~ +15.6%）
 - 使用 dev 版本后，tree n=2 和 n=3 的加速比更接近（+15.6% vs +13.2%），趋势与 NPU 一致
-- CUDA baseline 吞吐量（86.64）约为 NPU（56.60）的 1.53x
-- CUDA Accept Length（1.48~1.50）与 NPU（1.43~1.50）接近，说明两个平台的 draft model 行为一致
+- CUDA baseline 吞吐量（86.64）约为 NPU（54.68）的 1.58x
+- CUDA Accept Length（1.48~1.50）与 NPU（1.46~1.50）接近，说明两个平台的 draft model 行为一致
+- NPU 优化后 tree n=2 达到 +14.3%，与 CUDA 的 +15.6% 仅差 1.3pp
 - 两个平台趋势一致：tree speculative decoding 有效提升吞吐量
+
+## NPU vs CUDA 最终对比（同一 vLLM dev 版本）
+
+| 指标 | CUDA (A800) | NPU (910B2C, 优化后) | 差距 |
+|------|------------|---------------------|------|
+| Tree n=2 加速 | +15.6% | **+14.3%** | 1.3pp |
+| Tree n=3 加速 | +13.2% | **+10.2%** | 3.0pp |
+| Mean Accept Length | 1.48~1.50 | 1.46~1.50 | 一致 |
+| Position 0 接受率 | 0.32~0.35 | 0.35 | 一致 |
+| Position 1 接受率 | 0.12~0.13 | 0.11 | 一致 |

@@ -595,13 +595,15 @@ class AscendTreeAttentionImpl(AttentionImpl):
         """Decode 阶段: TND layout + sparse_mode=3 + tree_attn_mask。
 
         使用 tree attention mask 来限制 attend 范围。
+        支持 ACL Graph：当 is_draft_model=True 时，预计算 workspace 并使用
+        .out() 变体避免额外内存分配。
         """
         num_tokens = decode_meta.num_actual_tokens
         query = query[:num_tokens]
 
-        # 准备 actual_seq_lengths
-        actual_seq_lengths = decode_meta.query_start_loc[1:].tolist()
-        actual_seq_lengths_kv = decode_meta.seq_lens.tolist()
+        # 准备 actual_seq_lengths（使用 tensor 避免 CPU-GPU 同步）
+        actual_seq_lengths = decode_meta.query_start_loc[1:].to(torch.int64)
+        actual_seq_lengths_kv = decode_meta.seq_lens.to(torch.int64)
 
         # 使用 tree attention mask
         tree_mask = decode_meta.tree_attn_mask
@@ -609,21 +611,76 @@ class AscendTreeAttentionImpl(AttentionImpl):
             # 如果没有 tree mask，使用标准 causal mask
             tree_mask = decode_meta.attn_mask
 
-        attn_output, _ = torch_npu.npu_fused_infer_attention_score(
-            query=query,
-            key=key_cache,
-            value=value_cache,
-            atten_mask=tree_mask,
-            block_table=decode_meta.block_tables,
-            input_layout="TND",
-            block_size=key_cache.shape[1],  # block_size from cache shape
-            actual_seq_lengths=actual_seq_lengths,
-            actual_seq_lengths_kv=actual_seq_lengths_kv,
-            num_key_value_heads=self.num_kv_heads,
-            num_heads=self.num_heads,
-            scale=self.scale,
-            sparse_mode=3,
-        )
+        block_size = key_cache.shape[1]
+
+        # ACL Graph 支持：当在 draft model 上下文中时，预计算 workspace 并使用 .out()
+        from vllm_ascend.ascend_forward_context import _EXTRA_CTX
+
+        if _EXTRA_CTX.is_draft_model:
+            from vllm_ascend.compilation.acl_graph import (
+                get_draft_graph_params,
+                update_draft_graph_params_workspaces,
+            )
+
+            graph_params = get_draft_graph_params()
+            num_input_tokens = decode_meta.query_start_loc[-1].item()
+            workspace = graph_params.workspaces.get(num_input_tokens)
+            if workspace is None:
+                workspace = (
+                    torch_npu._npu_fused_infer_attention_score_get_max_workspace(
+                        query=query,
+                        key=key_cache,
+                        value=value_cache,
+                        atten_mask=tree_mask,
+                        block_table=decode_meta.block_tables,
+                        input_layout="TND",
+                        block_size=block_size,
+                        actual_seq_lengths=actual_seq_lengths,
+                        actual_seq_lengths_kv=actual_seq_lengths_kv,
+                        num_key_value_heads=self.num_kv_heads,
+                        num_heads=self.num_heads,
+                        sparse_mode=3,
+                        scale=self.scale,
+                    )
+                )
+                update_draft_graph_params_workspaces(
+                    num_input_tokens, workspace
+                )
+
+            attn_output = torch.empty_like(query)
+            softmax_lse = torch.empty(1, dtype=query.dtype, device=query.device)
+            torch_npu.npu_fused_infer_attention_score.out(
+                query=query,
+                key=key_cache,
+                value=value_cache,
+                atten_mask=tree_mask,
+                block_table=decode_meta.block_tables,
+                input_layout="TND",
+                block_size=block_size,
+                actual_seq_lengths=actual_seq_lengths,
+                actual_seq_lengths_kv=actual_seq_lengths_kv,
+                num_key_value_heads=self.num_kv_heads,
+                num_heads=self.num_heads,
+                sparse_mode=3,
+                scale=self.scale,
+                out=(attn_output, softmax_lse),
+            )
+        else:
+            attn_output, _ = torch_npu.npu_fused_infer_attention_score(
+                query=query,
+                key=key_cache,
+                value=value_cache,
+                atten_mask=tree_mask,
+                block_table=decode_meta.block_tables,
+                input_layout="TND",
+                block_size=block_size,
+                actual_seq_lengths=actual_seq_lengths,
+                actual_seq_lengths_kv=actual_seq_lengths_kv,
+                num_key_value_heads=self.num_kv_heads,
+                num_heads=self.num_heads,
+                scale=self.scale,
+                sparse_mode=3,
+            )
 
         attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
         output[:num_tokens] = attn_output[:num_tokens]
