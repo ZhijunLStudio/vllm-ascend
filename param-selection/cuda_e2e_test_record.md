@@ -7,8 +7,10 @@
 | 机器 | GPU 服务器 |
 | GPU | NVIDIA A800-SXM4-80GB (单卡) |
 | PyTorch | — |
-| vLLM | v0.11.0 |
+| vLLM | dev (from source, commit `9e138cb01`, 环境 `vllm17`) |
 | 运行日期 | 2026-04-17 |
+
+**注意**: 第一轮测试用 vLLM v0.11.0 (pip install)，因版本与 NPU 端不一致，重新用 dev 版本跑了一轮。
 
 ## 测试目标
 
@@ -45,34 +47,25 @@ git checkout feature/tree-spec-decode-cuda-verify
 #    Target: /data-ssd/lizhijun/models/LLM-Research/Meta-Llama-3.1-8B-Instruct
 #    Draft:  /data-ssd/lizhijun/models/yuhuili/EAGLE3-LLaMA3.1-Instruct-8B
 
-# 3. 如果需要下载模型（通过 modelscope）：
-pip install modelscope
-modelscope download --model LLM-Research/Meta-Llama-3.1-8B-Instruct --local_dir /data-ssd/lizhijun/models/LLM-Research/Meta-Llama-3.1-8B-Instruct
-huggingface-cli download yuhuili/EAGLE3-LLaMA3.1-Instruct-8B --local-dir /data-ssd/lizhijun/models/yuhuili/EAGLE3-LLaMA3.1-Instruct-8B
+# 3. 使用 vllm17 环境（dev 版本，从 source build）
+#    vLLM 源码: /data/lizhijun/work/fd-vllm/vllm
+VLLM_PYTHON="/data/lizhijun/anaconda3/envs/vllm17/bin/python"
 
-# 4. 跑测试（脚本方式，需要指定空闲 GPU）
-#    修改脚本中的 CUDA_VISIBLE_DEVICES=N 指定空闲卡
-python param-selection/tree_spec_decode_cuda_e2e.py --mode both --models-dir /data-ssd/lizhijun/models
-```
-
-### 手动启动方式（更可控）
-
-```bash
-# 启动 baseline
-export CUDA_VISIBLE_DEVICES=3  # 指定空闲卡
-python -m vllm.entrypoints.openai.api_server \
+# 4. 启动 baseline
+export CUDA_VISIBLE_DEVICES=3
+$VLLM_PYTHON -m vllm.entrypoints.openai.api_server \
     --model /data-ssd/lizhijun/models/LLM-Research/Meta-Llama-3.1-8B-Instruct \
     --port 8010 --max-model-len 2048 --gpu-memory-utilization 0.85 &
 
-# 启动 tree_n2
+# 5. 启动 tree_n2
 export CUDA_VISIBLE_DEVICES=3
-python -m vllm.entrypoints.openai.api_server \
+$VLLM_PYTHON -m vllm.entrypoints.openai.api_server \
     --model /data-ssd/lizhijun/models/LLM-Research/Meta-Llama-3.1-8B-Instruct \
     --port 8010 --max-model-len 2048 --gpu-memory-utilization 0.85 \
     --speculative-config '{"method":"eagle3","model":"/data-ssd/lizhijun/models/yuhuili/EAGLE3-LLaMA3.1-Instruct-8B","num_speculative_tokens":2,"speculative_token_tree":"[(0,), (0, 0)]"}' &
 
-# 用 Python 发请求（避免 curl proxy 问题）
-python /tmp/run_test.py 8010 "test_name"
+# 6. 用 Python 发请求（避免 curl proxy 问题）
+$VLLM_PYTHON /tmp/run_test_vllm17.py 8010 "test_name"
 ```
 
 ## 踩坑记录
@@ -114,6 +107,18 @@ ps aux | grep "api_server\|VLLM::EngineCore" | grep -v grep | awk '{print $2}' |
 
 ## 测试结果
 
+### vLLM dev 版本（与 NPU 同版本，公平对比）
+
+| 模式 | 吞吐量 (tokens/s) | vs Baseline | Mean Accept Length | Position 0-N 接受率 |
+|------|-------------------|-------------|-------------------|-------------------|
+| Baseline | 86.64 | — | N/A | N/A |
+| Tree n=2 | 100.14 | +15.6% | 1.48 | 0.351, 0.125 |
+| Tree n=3 | 98.07 | +13.2% | 1.50 | 0.318, 0.119, 0.064 |
+
+所有模式 Async scheduling: enabled
+
+### vLLM v0.11.0（第一轮测试，仅供参考）
+
 | 模式 | 吞吐量 (tokens/s) | vs Baseline |
 |------|-------------------|-------------|
 | Baseline | 86.62 | — |
@@ -122,7 +127,8 @@ ps aux | grep "api_server\|VLLM::EngineCore" | grep -v grep | awk '{print $2}' |
 
 ## 结论
 
-- CUDA GPU 上 tree speculative decoding 带来了可测量的加速（+3.2% ~ +15.2%）
-- Tree n=3 比 n=2 加速更明显（+15.2% vs +3.2%），说明更深的 tree 允许更多并行
-- NPU 上 tree 加速效果更显著（+22.0% / +18.4%），可能因为 NPU baseline 速度本身较低，tree 并行化的收益更大
+- CUDA GPU 上 tree speculative decoding 带来了可测量的加速（+13.2% ~ +15.6%）
+- 使用 dev 版本后，tree n=2 和 n=3 的加速比更接近（+15.6% vs +13.2%），趋势与 NPU 一致
+- CUDA baseline 吞吐量（86.64）约为 NPU（56.60）的 1.53x
+- CUDA Accept Length（1.48~1.50）与 NPU（1.43~1.50）接近，说明两个平台的 draft model 行为一致
 - 两个平台趋势一致：tree speculative decoding 有效提升吞吐量

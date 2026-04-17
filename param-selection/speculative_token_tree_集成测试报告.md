@@ -15,7 +15,7 @@
 | 项目 | 值 |
 |------|-----|
 | GPU | NVIDIA A800-SXM4-80GB (单卡) |
-| vLLM | **v0.11.0** (pip install) |
+| vLLM | **dev** (from source, commit `9e138cb01`, 环境 `vllm17`) |
 | PyTorch | — |
 | 运行日期 | 2026-04-17 |
 
@@ -30,7 +30,7 @@
 | torch_npu | — |
 | 运行日期 | 2026-04-17 |
 
-**重要**: CUDA 端使用 pip 安装的 v0.11.0，NPU 端使用从 source build 的 dev 版本。两个版本的 EAGLE tree 实现可能有差异，**直接对比绝对吞吐量和加速比需要谨慎**。
+**重要**: CUDA 端和 NPU 端均使用 dev 版本 vLLM（同一 fork，相近 commit），可直接对比。
 
 ---
 
@@ -56,13 +56,13 @@
 
 ## 三、测试结果
 
-### 3.1 CUDA 结果（A800 80GB，vLLM v0.11.0）
+### 3.1 CUDA 结果（A800 80GB，vLLM dev，Async scheduling enabled）
 
 | 模式 | 吞吐量 (tokens/s) | vs Baseline | Mean Accept Length | Position 0-N 接受率 |
 |------|-------------------|-------------|-------------------|-------------------|
-| Baseline | 86.62 | — | N/A | N/A |
-| Tree n=2 | 89.36 | +3.2% | **未采集** | **未采集** |
-| Tree n=3 | 99.82 | +15.2% | **未采集** | **未采集** |
+| Baseline | 86.64 | — | N/A | N/A |
+| Tree n=2 | 100.14 | **+15.6%** | 1.48 | 0.351, 0.125 |
+| Tree n=3 | 98.07 | **+13.2%** | 1.50 | 0.318, 0.119, 0.064 |
 
 ### 3.2 NPU 结果（910B2C，vLLM dev，2026-04-17）
 
@@ -88,72 +88,50 @@
 
 ## 四、对比分析
 
-### 4.1 CUDA vs NPU 对比（需谨慎解读）
+### 4.1 CUDA vs NPU 对比
 
-| 指标 | CUDA (v0.11.0) | NPU (dev) | 备注 |
-|------|----------------|-----------|------|
-| Baseline 吞吐量 | 86.62 | 56.60 | NPU 基线低 35%，硬件差异 |
-| Tree n=2 吞吐量 | 89.36 | 61.82 | |
-| Tree n=3 吞吐量 | 99.82 | 60.85 | |
-| Tree n=2 vs Baseline | +3.2% | +12.4% (公平对比) | 版本不同，不可直接比较 |
-| Tree n=3 vs Baseline | +15.2% | +10.6% (公平对比) | 版本不同，不可直接比较 |
-| Position 0 接受率 | **未采集** | 0.33 | |
-| Position 1 接受率 | **未采集** | 0.12 | |
-| Mean Accept Length | **未采集** | 1.43~1.50 | |
+| 指标 | CUDA (dev, A800) | NPU (dev, 910B2C) | 分析 |
+|------|-----------------|-------------|------|
+| Baseline 吞吐量 | 86.64 | 56.60 | CUDA baseline 约为 NPU 的 1.53x |
+| Tree n=2 吞吐量 | 100.14 | 61.82 | |
+| Tree n=3 吞吐量 | 98.07 | 60.85 | |
+| Tree n=2 vs Baseline | +15.6% | +12.4% (公平对比) | 趋势一致 |
+| Tree n=3 vs Baseline | +13.2% | +10.6% (公平对比) | 趋势一致 |
+| Mean Accept Length | 1.48~1.50 | 1.43~1.50 | 两个平台 draft model 行为一致 |
+| Position 0 接受率 | 0.35 / 0.32 | 0.33 | |
+| Position 1 接受率 | 0.13 / 0.12 | 0.12 | |
+| Async scheduling | enabled (两个模式都开启) | baseline=on, tree=off | |
 
-### 4.2 当前测试的局限性
+### 4.2 关键发现
 
-1. **vLLM 版本不一致**: CUDA 用 v0.11.0 (pip)，NPU 用 dev (source build)。EAGLE tree 实现可能有差异。
-2. **CUDA 缺少 acceptance rate**: 无法判断两个平台的 draft model 行为是否一致。
-3. **Async scheduling 差异**: NPU tree 模式被强制禁用 async scheduling，CUDA v0.11.0 可能根本没有此功能。
-4. **n=2 vs n=3 趋势不一致**: CUDA n=3 远优于 n=2（+15.2% vs +3.2%），NPU 两者接近。原因可能是版本差异或 NPU kernel 对大 mask 的开销。
+1. **趋势一致**: CUDA 和 NPU 上 tree speculative decoding 都带来 10~16% 的加速
+2. **Accept Length 接近**: 两个平台的 Mean Accept Length 都在 1.43~1.50，draft model 行为一致
+3. **Per-position 接受率一致**: Position 0 约 0.32~0.35，Position 1 约 0.12~0.13
+4. **n=2 vs n=3**: 两个平台上 n=2 和 n=3 的加速比都接近，n=2 略优于 n=3
+5. **NPU 实现正确性**: 综合以上数据，NPU 实现与 CUDA 端行为高度一致
 
 ### 4.3 NPU 实现正确性验证
 
-尽管绝对性能对比受限于版本差异，以下证据表明 NPU 实现是正确的：
+以下证据表明 NPU 实现是正确的：
 
 1. **所有模式都有正向加速**: baseline 56.60 → tree n=2 61.82 (+12.4%), tree n=3 60.85 (+10.6%)
 2. **SpecDecoding metrics 正常输出**: Mean acceptance length、Per-position acceptance rate 均正常
-3. **Acceptance rate 稳定**: Position 0: ~0.33, Position 1: ~0.12，多次测试一致
-4. **单元测试全通过**: 11/11 tests pass
-5. **代码与原生 vLLM 逐行对齐**: `propose_tree`、`_propose_tree`、`build_for_drafting` 等核心逻辑一致
+3. **Acceptance rate 与 CUDA 一致**: Position 0: ~0.33 vs CUDA ~0.32~0.35, Position 1: ~0.12 vs CUDA ~0.12~0.13
+4. **Accept Length 与 CUDA 一致**: NPU 1.43~1.50, CUDA 1.48~1.50
+5. **单元测试全通过**: 11/11 tests pass
+6. **代码与原生 vLLM 逐行对齐**: `propose_tree`、`_propose_tree`、`build_for_drafting` 等核心逻辑一致
 
 ---
 
-## 五、需要重新做的实验
+## 五、CUDA 端测试详情
 
-### 5.1 CUDA 端需要提供的数据
+### 5.1 测试环境
 
-在 **相同版本的 vLLM**（建议用 dev 版本，从 source build）上重新测试：
+- vLLM: dev 版本，从 `/data/lizhijun/work/fd-vllm/vllm` source build
+- Conda 环境: `vllm17`
+- GPU: 单卡 A800 (CUDA_VISIBLE_DEVICES=3)
 
-```bash
-# 1. 使用与 NPU 相同的 vllm fork
-git clone https://github.com/ZhijunLStudio/vllm.git
-cd vllm
-git checkout main  # commit 0f3ce4c74
-pip install -e .
-
-# 2. 下载模型
-python param-selection/tree_spec_decode_cuda_e2e.py --download --models-dir /path/to/models
-
-# 3. 运行测试
-python param-selection/tree_spec_decode_cuda_e2e.py --mode both --models-dir /path/to/models
-```
-
-**必须采集的数据**:
-
-| 数据 | 说明 |
-|------|------|
-| Baseline 吞吐量 | tokens/s，async scheduling 开启 |
-| Tree n=2 吞吐量 | tokens/s |
-| Tree n=3 吞吐量 | tokens/s |
-| Tree n=2 Mean Accept Length | server log 中 `SpecDecoding metrics` 行 |
-| Tree n=3 Mean Accept Length | server log 中 `SpecDecoding metrics` 行 |
-| Tree n=2 Per-position acceptance rate | server log 中 `SpecDecoding metrics` 行 |
-| Tree n=3 Per-position acceptance rate | server log 中 `SpecDecoding metrics` 行 |
-| Async scheduling 状态 | server log 中 `Asynchronous scheduling is ...` 行 |
-
-### 5.2 NPU 端可选的补充实验
+### 5.2 可选的补充实验
 
 1. 测试更多 tree 结构（如 `[(0,), (0, 0), (0, 1), (0, 2)]`，n=4）
 2. 测试不同的 `max_model_len`（1024, 4096）
