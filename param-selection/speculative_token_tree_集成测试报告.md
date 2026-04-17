@@ -8,7 +8,33 @@
 
 ---
 
-## 测试配置
+## 一、测试环境
+
+### CUDA 端（A800 80GB）
+
+| 项目 | 值 |
+|------|-----|
+| GPU | NVIDIA A800-SXM4-80GB (单卡) |
+| vLLM | **v0.11.0** (pip install) |
+| PyTorch | — |
+| 运行日期 | 2026-04-17 |
+
+### NPU 端（910B2C）
+
+| 项目 | 值 |
+|------|-----|
+| NPU | Ascend 910B2C |
+| vLLM | **dev** (from source, fork: [ZhijunLStudio/vllm](https://github.com/ZhijunLStudio/vllm), commit `0f3ce4c74`, branch `main`) |
+| vllm-ascend | branch `feature/tree-spec-decode-cuda-verify`, commit `016ef078` |
+| VLLM_VERSION | 0.19.0 (环境变量) |
+| torch_npu | — |
+| 运行日期 | 2026-04-17 |
+
+**重要**: CUDA 端使用 pip 安装的 v0.11.0，NPU 端使用从 source build 的 dev 版本。两个版本的 EAGLE tree 实现可能有差异，**直接对比绝对吞吐量和加速比需要谨慎**。
+
+---
+
+## 二、测试配置
 
 | 项目 | 值 |
 |------|-----|
@@ -28,62 +54,116 @@
 
 ---
 
-## 测试步骤
+## 三、测试结果
 
-### CUDA 端（目标机器）
-
-```bash
-# 1. 切换到 tree-spec-decode-cuda-verify 分支
-git checkout feature/tree-spec-decode-cuda-verify
-
-# 2. 下载模型
-python param-selection/tree_spec_decode_cuda_e2e.py --download --models-dir /path/to/models
-
-# 3. 运行完整测试（baseline + tree_n2 + tree_n3）
-python param-selection/tree_spec_decode_cuda_e2e.py --mode both --models-dir /path/to/models
-
-# 结果保存在 tree_spec_decode_cuda_results.json
-```
-
-### NPU 端（已完成）
-
-NPU 测试已在 Ascend 910B2C 上完成，结果见下方。
-
----
-
-## 结果对比
-
-### CUDA 结果（已填入）
+### 3.1 CUDA 结果（A800 80GB，vLLM v0.11.0）
 
 | 模式 | 吞吐量 (tokens/s) | vs Baseline | Mean Accept Length | Position 0-N 接受率 |
 |------|-------------------|-------------|-------------------|-------------------|
 | Baseline | 86.62 | — | N/A | N/A |
-| Tree n=2 | 89.36 | +3.2% | — | — |
-| Tree n=3 | 99.82 | +15.2% | — | — |
+| Tree n=2 | 89.36 | +3.2% | **未采集** | **未采集** |
+| Tree n=3 | 99.82 | +15.2% | **未采集** | **未采集** |
 
-### NPU 结果（已完成）
+### 3.2 NPU 结果（910B2C，vLLM dev，2026-04-17）
+
+**注意**: vllm-ascend 在 speculative decoding 活跃时会**强制禁用 async scheduling**（`platform.py:886-893`），而 baseline 默认开启 async scheduling。这导致 tree 模式的基线实际上比 baseline 更低。
+
+**方式 1: 与默认 baseline 对比（async enabled）**
 
 | 模式 | 吞吐量 (tokens/s) | vs Baseline | Mean Accept Length | Position 0-N 接受率 |
 |------|-------------------|-------------|-------------------|-------------------|
-| Baseline | 56.65 | — | N/A | N/A |
-| Tree n=2 | 69.08 | +22.0% | 1.41 | 0.283, 0.126 |
-| Tree n=3 | 67.05 | +18.4% | 1.38 | 0.278, 0.085, 0.014 |
+| Baseline (async=on) | 56.60 | — | N/A | N/A |
+| Tree n=2 (async=off) | 61.82 | +9.3% | 1.43 | 0.32, 0.11 |
+| Tree n=3 (async=off) | 60.85 | +7.5% | 1.50 | 0.33, 0.12, 0.05 |
 
-### 对比分析
+**方式 2: 相同 async 配置对比（都禁用 async scheduling）**
 
-| 指标 | CUDA (A800 80GB) | NPU (910B2C) | 分析 |
-|------|-----------------|-------------|------|
-| Baseline 吞吐量 | 86.62 | 56.65 | CUDA 单卡 baseline 约为 NPU 的 1.53x |
-| Tree n=2 吞吐量 | 89.36 | 69.08 | |
-| Tree n=2 vs Baseline | +3.2% | +22.0% | NPU 上 tree 加速效果更显著 |
-| Tree n=3 吞吐量 | 99.82 | 67.05 | |
-| Tree n=3 vs Baseline | +15.2% | +18.4% | 两者趋势一致，n=3 均优于 n=2 |
+| 模式 | 吞吐量 (tokens/s) | vs No-Async Baseline | Mean Accept Length | Position 0-N 接受率 |
+|------|-------------------|---------------------|-------------------|-------------------|
+| Baseline (async=off) | 55.02 | — | N/A | N/A |
+| Tree n=2 (async=off) | 61.82 | **+12.4%** | 1.43 | 0.32, 0.11 |
+| Tree n=3 (async=off) | 60.85 | **+10.6%** | 1.50 | 0.33, 0.12, 0.05 |
 
 ---
 
-## NPU 实现细节
+## 四、对比分析
 
-### 已对齐原生 vLLM 的功能
+### 4.1 CUDA vs NPU 对比（需谨慎解读）
+
+| 指标 | CUDA (v0.11.0) | NPU (dev) | 备注 |
+|------|----------------|-----------|------|
+| Baseline 吞吐量 | 86.62 | 56.60 | NPU 基线低 35%，硬件差异 |
+| Tree n=2 吞吐量 | 89.36 | 61.82 | |
+| Tree n=3 吞吐量 | 99.82 | 60.85 | |
+| Tree n=2 vs Baseline | +3.2% | +12.4% (公平对比) | 版本不同，不可直接比较 |
+| Tree n=3 vs Baseline | +15.2% | +10.6% (公平对比) | 版本不同，不可直接比较 |
+| Position 0 接受率 | **未采集** | 0.33 | |
+| Position 1 接受率 | **未采集** | 0.12 | |
+| Mean Accept Length | **未采集** | 1.43~1.50 | |
+
+### 4.2 当前测试的局限性
+
+1. **vLLM 版本不一致**: CUDA 用 v0.11.0 (pip)，NPU 用 dev (source build)。EAGLE tree 实现可能有差异。
+2. **CUDA 缺少 acceptance rate**: 无法判断两个平台的 draft model 行为是否一致。
+3. **Async scheduling 差异**: NPU tree 模式被强制禁用 async scheduling，CUDA v0.11.0 可能根本没有此功能。
+4. **n=2 vs n=3 趋势不一致**: CUDA n=3 远优于 n=2（+15.2% vs +3.2%），NPU 两者接近。原因可能是版本差异或 NPU kernel 对大 mask 的开销。
+
+### 4.3 NPU 实现正确性验证
+
+尽管绝对性能对比受限于版本差异，以下证据表明 NPU 实现是正确的：
+
+1. **所有模式都有正向加速**: baseline 56.60 → tree n=2 61.82 (+12.4%), tree n=3 60.85 (+10.6%)
+2. **SpecDecoding metrics 正常输出**: Mean acceptance length、Per-position acceptance rate 均正常
+3. **Acceptance rate 稳定**: Position 0: ~0.33, Position 1: ~0.12，多次测试一致
+4. **单元测试全通过**: 11/11 tests pass
+5. **代码与原生 vLLM 逐行对齐**: `propose_tree`、`_propose_tree`、`build_for_drafting` 等核心逻辑一致
+
+---
+
+## 五、需要重新做的实验
+
+### 5.1 CUDA 端需要提供的数据
+
+在 **相同版本的 vLLM**（建议用 dev 版本，从 source build）上重新测试：
+
+```bash
+# 1. 使用与 NPU 相同的 vllm fork
+git clone https://github.com/ZhijunLStudio/vllm.git
+cd vllm
+git checkout main  # commit 0f3ce4c74
+pip install -e .
+
+# 2. 下载模型
+python param-selection/tree_spec_decode_cuda_e2e.py --download --models-dir /path/to/models
+
+# 3. 运行测试
+python param-selection/tree_spec_decode_cuda_e2e.py --mode both --models-dir /path/to/models
+```
+
+**必须采集的数据**:
+
+| 数据 | 说明 |
+|------|------|
+| Baseline 吞吐量 | tokens/s，async scheduling 开启 |
+| Tree n=2 吞吐量 | tokens/s |
+| Tree n=3 吞吐量 | tokens/s |
+| Tree n=2 Mean Accept Length | server log 中 `SpecDecoding metrics` 行 |
+| Tree n=3 Mean Accept Length | server log 中 `SpecDecoding metrics` 行 |
+| Tree n=2 Per-position acceptance rate | server log 中 `SpecDecoding metrics` 行 |
+| Tree n=3 Per-position acceptance rate | server log 中 `SpecDecoding metrics` 行 |
+| Async scheduling 状态 | server log 中 `Asynchronous scheduling is ...` 行 |
+
+### 5.2 NPU 端可选的补充实验
+
+1. 测试更多 tree 结构（如 `[(0,), (0, 0), (0, 1), (0, 2)]`，n=4）
+2. 测试不同的 `max_model_len`（1024, 4096）
+3. 测试 batch_size > 1 的场景
+
+---
+
+## 六、NPU 实现详情
+
+### 6.1 已对齐原生 vLLM 的功能
 
 | 功能 | 状态 | 文件 |
 |------|------|------|
@@ -96,15 +176,17 @@ NPU 测试已在 Ascend 910B2C 上完成，结果见下方。
 | `slot_mapping` 传递 | ✅ | `ascend_forward_context.py` |
 | `num_tokens_across_dp` 传递 | ✅ | `eagle_proposer.py` |
 | ACL Graph per-level dispatch | ✅ | `eagle_proposer.py` |
+| `exceeds_max_model_len` 处理 | ✅ | `eagle_proposer.py` |
+| SpecDecoding metrics 输出 | ✅ | Server log |
 
-### NPU 独有优化
+### 6.2 NPU 独有优化
 
 | 优化 | 说明 |
 |------|------|
 | Mask 缓存 | 预计算所有 slice mask，避免运行时重复计算 |
 | int8 mask | GPU 用 float32 (-inf/0)，NPU 用 int8 (1/0)，pad 到 2048x2048 |
 
-### Bug 修复记录
+### 6.3 Bug 修复记录
 
 | 编号 | 严重度 | 问题 | 修复 |
 |------|--------|------|------|
@@ -116,27 +198,17 @@ NPU 测试已在 Ascend 910B2C 上完成，结果见下方。
 
 ---
 
-## 单元测试
+## 七、单元测试
 
 NPU 端单元测试全部通过（11/11）：
 
 ```
-tests/ut/attention/test_tree_attn_npu.py::TestTreeMaskConversion::test_is_ancestor PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestTreeMaskConversion::test_get_depth_counts PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestTreeMaskConversion::test_prepare_tree_attn_bias_gpu PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestTreeMaskConversion::test_convert_tree_mask_for_npu PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestAscendTreeAttentionBackend::test_backend_name PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestAscendTreeAttentionBackend::test_backend_classes PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestAscendTreeAttentionBackend::test_kv_cache_shape PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestAscendTreeAttentionBackend::test_kv_cache_shape_invalid_block_size PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestAscendTreeAttentionMetadata::test_metadata_creation PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestConvertFunction::test_binary_tree_depth_3 PASSED
-tests/ut/attention/test_tree_attn_npu.py::TestConvertFunction::test_single_token_tree PASSED
+tests/ut/attention/test_tree_attn_npu.py (11 tests)
 ```
 
 ---
 
-## 修改文件清单
+## 八、修改文件清单
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
