@@ -34,14 +34,14 @@ import sys
 import time
 
 # ============ Configuration ============
-MODELS_DIR = os.environ.get("MODELS_DIR", "./models")
+MODELS_DIR = os.environ.get("MODELS_DIR", "/data-ssd/lizhijun/models")
 TARGET_MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 DRAFT_MODEL = "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B"
-TARGET_DIR = os.path.join(MODELS_DIR, "Meta-Llama-3.1-8B-Instruct")
-DRAFT_DIR = os.path.join(MODELS_DIR, "EAGLE3-LLaMA3.1-Instruct-8B")
+TARGET_DIR = os.path.join(MODELS_DIR, "LLM-Research/Meta-Llama-3.1-8B-Instruct")
+DRAFT_DIR = os.path.join(MODELS_DIR, "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B")
 
-BASELINE_PORT = 8000
-TREE_PORT = 8001
+BASELINE_PORT = 8010
+TREE_PORT = 8011
 
 TREE_CONFIGS = [
     {
@@ -72,7 +72,7 @@ TEST_PROMPTS = [
 
 MAX_TOKENS = 100
 TEMPERATURE = 0.0
-GPU_MEMORY_UTILIZATION = 0.85
+GPU_MEMORY_UTILIZATION = 0.5
 MAX_MODEL_LEN = 2048
 NUM_REQUESTS = 10
 
@@ -127,7 +127,7 @@ def start_server(port, speculative_config=None):
     return proc, log_file
 
 
-def wait_for_server(port, timeout=120):
+def wait_for_server(port, timeout=300):
     """Wait for server to be ready."""
     import urllib.request
     url = f"http://localhost:{port}/health"
@@ -296,12 +296,12 @@ def main():
     parser.add_argument("--models-dir", default=MODELS_DIR, help="Directory for models")
     parser.add_argument("--num-requests", type=int, default=NUM_REQUESTS, help="Number of test requests")
     args = parser.parse_args()
+    num_requests = args.num_requests
 
-    global MODELS_DIR, TARGET_DIR, DRAFT_DIR, NUM_REQUESTS
-    MODELS_DIR = args.models_dir
-    TARGET_DIR = os.path.join(MODELS_DIR, "Meta-Llama-3.1-8B-Instruct")
-    DRAFT_DIR = os.path.join(MODELS_DIR, "EAGLE3-LLaMA3.1-Instruct-8B")
-    NUM_REQUESTS = args.num_requests
+    global TARGET_DIR, DRAFT_DIR
+    models_dir = args.models_dir
+    TARGET_DIR = os.path.join(models_dir, "LLM-Research/Meta-Llama-3.1-8B-Instruct")
+    DRAFT_DIR = os.path.join(models_dir, "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B")
 
     print("=" * 60)
     print("CUDA Tree Speculative Decoding E2E Test")
@@ -309,7 +309,7 @@ def main():
     print(f"Target model: {TARGET_DIR}")
     print(f"Draft model:  {DRAFT_DIR}")
     print(f"Mode: {args.mode}")
-    print(f"Requests: {NUM_REQUESTS}")
+    print(f"Requests: {num_requests}")
     print()
 
     if args.download:
