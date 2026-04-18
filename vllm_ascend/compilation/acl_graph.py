@@ -17,6 +17,7 @@ from vllm.compilation.monitor import validate_cudagraph_capturing_enabled
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import BatchDescriptor, get_forward_context
 from vllm.logger import logger
+from vllm.model_executor.offloader import get_offloader
 from vllm.platforms import current_platform
 
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
@@ -136,6 +137,9 @@ class ACLGraphWrapper:
             entry.input_addresses = input_addresses
             aclgraph = torch.npu.NPUGraph()
 
+            # Sync offloader's copy stream before capture.
+            get_offloader().sync_prev_onload()
+
             with ExitStack() as stack:
                 if self.aclgraph_options.gc_disable:
                     # during every model forward for piecewise aclgraph
@@ -152,6 +156,11 @@ class ACLGraphWrapper:
                 with torch.npu.graph(aclgraph, pool=self.graph_pool):
                     # `output` is managed by pytorch's aclgraph pool
                     output = self.runnable(*args, **kwargs)
+                    # Join offloader's copy stream after forward to avoid
+                    # unjoined stream error. The last layer's start_prefetch
+                    # forks copy_stream, but wait_prefetch only happens in
+                    # the next forward pass.
+                    get_offloader().join_after_forward()
                     if self.aclgraph_options.weak_ref_output:
                         # by converting it to weak ref,
                         # the original `output` will immediately be released
@@ -190,6 +199,9 @@ class ACLGraphWrapper:
             )
 
         logger.info_once("Replaying aclgraph")
+        # Sync offloader before replay - needed when transitioning from
+        # graph capture to replay.
+        get_offloader().sync_prev_onload()
         # In async scheduling or multi-threaded (MT) scenarios, it is possible that
         # the CPU's record event (from update_attn_params) for the iteration i completes
         # before the grph replay of iteration i-1.

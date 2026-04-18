@@ -592,6 +592,12 @@ class NPUPlatform(Platform):
         return True
 
     @classmethod
+    def is_uva_available(cls) -> bool:
+        # NPU does not support UVA (Unified Virtual Addressing),
+        # which is a CUDA-specific feature for zero-copy CPU memory access.
+        return False
+
+    @classmethod
     def opaque_attention_op(cls) -> bool:
         return True
 

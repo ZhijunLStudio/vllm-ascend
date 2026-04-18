@@ -60,6 +60,11 @@ from vllm_ascend.utils import (
     get_ascend_device_type,
     register_ascend_customop,
 )
+
+# Patch create_offloader BEFORE model_runner_v1 imports gpu_model_runner
+# (which captures create_offloader via from-import at module level)
+import vllm_ascend.patch.worker.patch_offloader  # noqa: F401
+
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
 torch._dynamo.trace_rules.clear_lru_cache()  # noqa: E402

@@ -2796,6 +2796,9 @@ class NPUModelRunner(GPUModelRunner):
             self.update_stream: torch.npu.Stream = torch.npu.Stream()
             self.model = ACLGraphWrapper(self.model, self.vllm_config, runtime_mode=CUDAGraphMode.FULL)
 
+        from vllm.model_executor.offloader import get_offloader
+        get_offloader().post_init()
+
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """
         Initialize KV cache based on `kv_cache_config`.
@@ -3304,11 +3307,6 @@ class NPUModelRunner(GPUModelRunner):
             max_num_blocks.append(max_num_blocks_per_req)
 
         if block_sizes != [self.cache_config.block_size] or self.kernel_block_sizes != [[self.cache_config.block_size]]:
-            assert self.offload_config.uva.cpu_offload_gb == 0, (
-                "Cannot re-initialize the input batch when CPU weight "
-                "offloading is enabled. See https://github.com/vllm-project/vllm/pull/18298 "  # noqa: E501
-                "for more details."
-            )
             self.input_batch = NPUInputBatch(
                 max_num_reqs=self.max_num_reqs,
                 max_model_len=max_model_len,
