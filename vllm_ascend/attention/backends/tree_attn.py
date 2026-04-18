@@ -595,9 +595,8 @@ class AscendTreeAttentionImpl(AttentionImpl):
         """Decode 阶段: TND layout + sparse_mode=3 + tree_attn_mask。
 
         使用 tree attention mask 来限制 attend 范围。
-        支持 ACL Graph：当 is_draft_model=True 时，使用 ExternalEvent 同步机制
-        + graph_task_group_begin/end + workspace 预计算 + .out() 变体，
-        与 full_graph_fia 完全对齐。
+        支持 ACL Graph：当 is_draft_model=True 时，预计算 workspace 并使用
+        .out() 变体避免额外内存分配。
         """
         num_tokens = decode_meta.num_actual_tokens
         query = query[:num_tokens]
@@ -614,10 +613,8 @@ class AscendTreeAttentionImpl(AttentionImpl):
 
         block_size = key_cache.shape[1]
 
-        # ACL Graph 支持：当在 draft model 上下文中时，
-        # 使用完整的 ExternalEvent 同步机制，与 full_graph_fia 对齐
+        # ACL Graph 支持：当在 draft model 上下文中时，预计算 workspace 并使用 .out()
         from vllm_ascend.ascend_forward_context import _EXTRA_CTX
-        from vllm_ascend.utils import weak_ref_tensors
 
         if _EXTRA_CTX.is_draft_model:
             from vllm_ascend.compilation.acl_graph import (
@@ -628,7 +625,6 @@ class AscendTreeAttentionImpl(AttentionImpl):
             graph_params = get_draft_graph_params()
             num_input_tokens = decode_meta.query_start_loc[-1].item()
             workspace = graph_params.workspaces.get(num_input_tokens)
-            softmax_lse = torch.empty(1, dtype=query.dtype, device=query.device)
             if workspace is None:
                 workspace = (
                     torch_npu._npu_fused_infer_attention_score_get_max_workspace(
@@ -652,32 +648,7 @@ class AscendTreeAttentionImpl(AttentionImpl):
                 )
 
             attn_output = torch.empty_like(query)
-
-            # ExternalEvent 同步机制，与 full_graph_fia 对齐
-            stream = torch_npu.npu.current_stream()
-            event = torch.npu.ExternalEvent()
-            event.wait(stream)
-            event.reset(stream)
-            graph_params.events[num_input_tokens].append(event)
-            graph_params.attn_params[num_input_tokens].append(
-                (
-                    weak_ref_tensors(query),
-                    weak_ref_tensors(key_cache),
-                    weak_ref_tensors(value_cache),
-                    weak_ref_tensors(decode_meta.block_tables),
-                    weak_ref_tensors(tree_mask),
-                    block_size,
-                    actual_seq_lengths_kv,
-                    actual_seq_lengths,
-                    self.num_kv_heads,
-                    self.num_heads,
-                    self.scale,
-                    weak_ref_tensors(output[:num_tokens]),
-                    weak_ref_tensors(softmax_lse),
-                )
-            )
-
-            torch.npu.graph_task_group_begin(stream)
+            softmax_lse = torch.empty(1, dtype=query.dtype, device=query.device)
             torch_npu.npu_fused_infer_attention_score.out(
                 query=query,
                 key=key_cache,
@@ -692,14 +663,8 @@ class AscendTreeAttentionImpl(AttentionImpl):
                 num_heads=self.num_heads,
                 sparse_mode=3,
                 scale=self.scale,
-                workspace=workspace,
                 out=(attn_output, softmax_lse),
             )
-            attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
-            output[:num_tokens] = attn_output[:num_tokens]
-
-            handle = torch.npu.graph_task_group_end(stream)
-            graph_params.handles[num_input_tokens].append(handle)
         else:
             attn_output, _ = torch_npu.npu_fused_infer_attention_score(
                 query=query,
@@ -716,5 +681,6 @@ class AscendTreeAttentionImpl(AttentionImpl):
                 scale=self.scale,
                 sparse_mode=3,
             )
-            attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
-            output[:num_tokens] = attn_output[:num_tokens]
+
+        attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
+        output[:num_tokens] = attn_output[:num_tokens]

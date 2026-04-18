@@ -285,7 +285,6 @@ ps aux | grep "api_server\|VLLM::EngineCore" | grep -v grep | awk '{print $2}' |
 | SpecDecoding metrics 输出 | ✅ | Server log |
 | ACL Graph attention workspace | ✅ | `tree_attn.py` (优化后) |
 | 无同步 actual_seq_lengths | ✅ | `tree_attn.py` (优化后) |
-| ExternalEvent 同步机制 | ✅ | `tree_attn.py` (优化 4) |
 
 ### 7.2 NPU 独有优化
 
@@ -294,7 +293,6 @@ ps aux | grep "api_server\|VLLM::EngineCore" | grep -v grep | awk '{print $2}' |
 | Mask 缓存 | 预计算所有 slice mask，避免运行时重复计算 |
 | int8 mask | GPU 用 float32 (-inf/0)，NPU 用 int8 (1/0)，pad 到 2048x2048 |
 | `.out()` 变体 | ACL Graph 模式下使用 `.out()` 避免额外内存分配 |
-| ExternalEvent 同步 | 与 full_graph_fia 对齐，完整的 graph capture 机制 |
 
 ### 7.3 Bug 修复记录
 
@@ -307,7 +305,6 @@ ps aux | grep "api_server\|VLLM::EngineCore" | grep -v grep | awk '{print $2}' |
 | 5 | P1 | ACL Graph per-level 缺失 | `propose_tree` 添加 dispatch |
 | 6 | P2 | `.tolist()` 强制 CPU 同步 | 改为 `.to(torch.int64)` |
 | 7 | P2 | Attention 未使用 ACL Graph | 添加 workspace 预计算 + `.out()` 支持 |
-| 8 | P2 | ACL Graph 缺少 ExternalEvent | 添加完整的 ExternalEvent 同步机制 |
 
 ---
 
