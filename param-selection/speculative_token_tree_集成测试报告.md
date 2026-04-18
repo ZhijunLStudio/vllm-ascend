@@ -308,7 +308,6 @@ ps aux | grep "api_server\|VLLM::EngineCore" | grep -v grep | awk '{print $2}' |
 | 6 | P2 | `.tolist()` 强制 CPU 同步 | 改为 `.to(torch.int64)` |
 | 7 | P2 | Attention 未使用 ACL Graph | 添加 workspace 预计算 + `.out()` 支持 |
 | 8 | P2 | ACL Graph 缺少 ExternalEvent | 添加完整的 ExternalEvent 同步机制 |
-| 9 | P1 | Async scheduling 被强制禁用 | 移除过时的禁用代码（`update_num_computed_tokens_for_batch_change` 已实现） |
 
 ---
 
