@@ -1,0 +1,219 @@
+{
+  "platform": "npu",
+  "modes": [
+    "eager"
+  ],
+  "functional": {
+    "baseline": {
+      "mode": "eager",
+      "time": 1.51,
+      "total_tokens": 300,
+      "tokens_per_sec": 198.0
+    },
+    "prefetch_g8n2s1": {
+      "mode": "eager",
+      "time": 3.99,
+      "total_tokens": 300,
+      "tokens_per_sec": 75.2,
+      "output_match": true
+    },
+    "prefetch_g8n2s2": {
+      "mode": "eager",
+      "time": 3.84,
+      "total_tokens": 300,
+      "tokens_per_sec": 78.0,
+      "output_match": true
+    },
+    "prefetch_g4n1s1": {
+      "mode": "eager",
+      "time": 3.99,
+      "total_tokens": 300,
+      "tokens_per_sec": 75.2,
+      "output_match": true
+    },
+    "prefetch_g4n1s2": {
+      "mode": "eager",
+      "time": 3.84,
+      "total_tokens": 300,
+      "tokens_per_sec": 78.1,
+      "output_match": true
+    }
+  },
+  "benchmark": {
+    "baseline": {
+      "mode": "eager",
+      "warmup_time_s": 0.15,
+      "single_request_latencies": [
+        {
+          "latency_s": 0.776,
+          "tokens": 50,
+          "tokens_per_sec": 64.4
+        },
+        {
+          "latency_s": 0.77,
+          "tokens": 50,
+          "tokens_per_sec": 64.9
+        },
+        {
+          "latency_s": 0.77,
+          "tokens": 50,
+          "tokens_per_sec": 64.9
+        },
+        {
+          "latency_s": 0.771,
+          "tokens": 50,
+          "tokens_per_sec": 64.8
+        },
+        {
+          "latency_s": 0.771,
+          "tokens": 50,
+          "tokens_per_sec": 64.8
+        }
+      ],
+      "avg_latency_s": 0.772,
+      "batch_time_s": 0.92,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 541.0
+    },
+    "prefetch_g8n2s1": {
+      "mode": "eager",
+      "warmup_time_s": 0.25,
+      "single_request_latencies": [
+        {
+          "latency_s": 6.204,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        },
+        {
+          "latency_s": 6.204,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        },
+        {
+          "latency_s": 6.205,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        },
+        {
+          "latency_s": 6.205,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        },
+        {
+          "latency_s": 6.205,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        }
+      ],
+      "avg_latency_s": 6.205,
+      "batch_time_s": 6.37,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 78.5
+    },
+    "prefetch_g8n2s2": {
+      "mode": "eager",
+      "warmup_time_s": 0.23,
+      "single_request_latencies": [
+        {
+          "latency_s": 6.024,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        },
+        {
+          "latency_s": 6.024,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        },
+        {
+          "latency_s": 6.025,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        },
+        {
+          "latency_s": 6.024,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        },
+        {
+          "latency_s": 6.025,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        }
+      ],
+      "avg_latency_s": 6.024,
+      "batch_time_s": 6.15,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 81.3
+    },
+    "prefetch_g4n1s1": {
+      "mode": "eager",
+      "warmup_time_s": 0.24,
+      "single_request_latencies": [
+        {
+          "latency_s": 6.204,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        },
+        {
+          "latency_s": 6.204,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        },
+        {
+          "latency_s": 6.204,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        },
+        {
+          "latency_s": 6.204,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        },
+        {
+          "latency_s": 6.204,
+          "tokens": 50,
+          "tokens_per_sec": 8.1
+        }
+      ],
+      "avg_latency_s": 6.204,
+      "batch_time_s": 6.37,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 78.5
+    },
+    "prefetch_g4n1s2": {
+      "mode": "eager",
+      "warmup_time_s": 0.23,
+      "single_request_latencies": [
+        {
+          "latency_s": 6.024,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        },
+        {
+          "latency_s": 6.024,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        },
+        {
+          "latency_s": 6.024,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        },
+        {
+          "latency_s": 6.024,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        },
+        {
+          "latency_s": 6.024,
+          "tokens": 50,
+          "tokens_per_sec": 8.3
+        }
+      ],
+      "avg_latency_s": 6.024,
+      "batch_time_s": 6.15,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 81.3
+    }
+  }
+}
