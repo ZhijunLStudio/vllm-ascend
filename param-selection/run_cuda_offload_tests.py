@@ -195,7 +195,7 @@ def run_functional_tests(model_path):
     t0 = time.time()
     outputs = llm.generate(TEST_PROMPTS, sampling_params, use_tqdm=False)
     t = time.time() - t0
-    tokens = sum(len(o.outputs[0].completion_token_ids) for o in outputs)
+    tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
     baseline_texts = [o.outputs[0].text for o in outputs]
     del llm
     results["baseline"] = {"time": round(t, 2), "total_tokens": tokens,
@@ -212,7 +212,7 @@ def run_functional_tests(model_path):
     t0 = time.time()
     outputs = llm.generate(TEST_PROMPTS, sampling_params, use_tqdm=False)
     t = time.time() - t0
-    tokens = sum(len(o.outputs[0].completion_token_ids) for o in outputs)
+    tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
     offload_texts = [o.outputs[0].text for o in outputs]
     del llm
     results["prefetch_g8n2s1"] = {"time": round(t, 2), "total_tokens": tokens,
@@ -231,7 +231,7 @@ def run_functional_tests(model_path):
     t0 = time.time()
     outputs = llm.generate(TEST_PROMPTS, sampling_params, use_tqdm=False)
     t = time.time() - t0
-    tokens = sum(len(o.outputs[0].completion_token_ids) for o in outputs)
+    tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
     del llm
     results["prefetch_g4n1s2"] = {"time": round(t, 2), "total_tokens": tokens,
                                    "tokens_per_sec": round(tokens / t, 1)}
@@ -247,7 +247,7 @@ def run_functional_tests(model_path):
         t0 = time.time()
         outputs = llm.generate(TEST_PROMPTS[:3], sampling_params, use_tqdm=False)
         t = time.time() - t0
-        tokens = sum(len(o.outputs[0].completion_token_ids) for o in outputs)
+        tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
         del llm
         results["uva_10gb"] = {"time": round(t, 2), "total_tokens": tokens,
                                 "tokens_per_sec": round(tokens / t, 1)}
@@ -309,7 +309,7 @@ def run_benchmark(model_path):
                 use_tqdm=False,
             )
             lat = time.time() - t0
-            tokens = len(output[0].outputs[0].completion_token_ids)
+            tokens = len(output[0].outputs[0].token_ids)
             latencies.append({"latency_s": round(lat, 3), "tokens": tokens,
                               "tokens_per_sec": round(tokens / lat, 1)})
 
@@ -320,7 +320,7 @@ def run_benchmark(model_path):
             use_tqdm=False,
         )
         batch_time = time.time() - t0
-        batch_tokens = sum(len(o.outputs[0].completion_token_ids) for o in outputs)
+        batch_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
 
         del llm
 
@@ -371,7 +371,7 @@ def main():
     print(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"GPU Mem: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB")
+        print(f"GPU Mem: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
     results = {}
 
