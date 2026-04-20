@@ -1,7 +1,8 @@
 {
   "platform": "npu",
   "modes": [
-    "eager"
+    "eager",
+    "graph"
   ],
   "functional": {
     "baseline": {
@@ -37,39 +38,46 @@
       "total_tokens": 300,
       "tokens_per_sec": 78.1,
       "output_match": true
+    },
+    "baseline_graph": {
+      "mode": "graph",
+      "time": 0.71,
+      "total_tokens": 300,
+      "tokens_per_sec": 420.2
+    },
+    "prefetch_g8n2s1_graph": {
+      "mode": "graph",
+      "time": 4.57,
+      "total_tokens": 300,
+      "tokens_per_sec": 65.7,
+      "output_match": true
+    },
+    "prefetch_g8n2s2_graph": {
+      "mode": "graph",
+      "time": 4.48,
+      "total_tokens": 300,
+      "tokens_per_sec": 66.9,
+      "output_match": true
+    },
+    "prefetch_g4n1s1_graph": {
+      "mode": "graph",
+      "time": 4.49,
+      "total_tokens": 300,
+      "tokens_per_sec": 66.9,
+      "output_match": true
+    },
+    "prefetch_g4n1s2_graph": {
+      "mode": "graph",
+      "time": 4.49,
+      "total_tokens": 300,
+      "tokens_per_sec": 66.9,
+      "output_match": true
     }
   },
   "benchmark": {
     "baseline": {
       "mode": "eager",
       "warmup_time_s": 0.15,
-      "single_request_latencies": [
-        {
-          "latency_s": 0.776,
-          "tokens": 50,
-          "tokens_per_sec": 64.4
-        },
-        {
-          "latency_s": 0.77,
-          "tokens": 50,
-          "tokens_per_sec": 64.9
-        },
-        {
-          "latency_s": 0.77,
-          "tokens": 50,
-          "tokens_per_sec": 64.9
-        },
-        {
-          "latency_s": 0.771,
-          "tokens": 50,
-          "tokens_per_sec": 64.8
-        },
-        {
-          "latency_s": 0.771,
-          "tokens": 50,
-          "tokens_per_sec": 64.8
-        }
-      ],
       "avg_latency_s": 0.772,
       "batch_time_s": 0.92,
       "batch_total_tokens": 500,
@@ -78,33 +86,6 @@
     "prefetch_g8n2s1": {
       "mode": "eager",
       "warmup_time_s": 0.25,
-      "single_request_latencies": [
-        {
-          "latency_s": 6.204,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        },
-        {
-          "latency_s": 6.204,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        },
-        {
-          "latency_s": 6.205,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        },
-        {
-          "latency_s": 6.205,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        },
-        {
-          "latency_s": 6.205,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        }
-      ],
       "avg_latency_s": 6.205,
       "batch_time_s": 6.37,
       "batch_total_tokens": 500,
@@ -113,33 +94,6 @@
     "prefetch_g8n2s2": {
       "mode": "eager",
       "warmup_time_s": 0.23,
-      "single_request_latencies": [
-        {
-          "latency_s": 6.024,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        },
-        {
-          "latency_s": 6.024,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        },
-        {
-          "latency_s": 6.025,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        },
-        {
-          "latency_s": 6.024,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        },
-        {
-          "latency_s": 6.025,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        }
-      ],
       "avg_latency_s": 6.024,
       "batch_time_s": 6.15,
       "batch_total_tokens": 500,
@@ -148,33 +102,6 @@
     "prefetch_g4n1s1": {
       "mode": "eager",
       "warmup_time_s": 0.24,
-      "single_request_latencies": [
-        {
-          "latency_s": 6.204,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        },
-        {
-          "latency_s": 6.204,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        },
-        {
-          "latency_s": 6.204,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        },
-        {
-          "latency_s": 6.204,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        },
-        {
-          "latency_s": 6.204,
-          "tokens": 50,
-          "tokens_per_sec": 8.1
-        }
-      ],
       "avg_latency_s": 6.204,
       "batch_time_s": 6.37,
       "batch_total_tokens": 500,
@@ -183,37 +110,50 @@
     "prefetch_g4n1s2": {
       "mode": "eager",
       "warmup_time_s": 0.23,
-      "single_request_latencies": [
-        {
-          "latency_s": 6.024,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        },
-        {
-          "latency_s": 6.024,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        },
-        {
-          "latency_s": 6.024,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        },
-        {
-          "latency_s": 6.024,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        },
-        {
-          "latency_s": 6.024,
-          "tokens": 50,
-          "tokens_per_sec": 8.3
-        }
-      ],
       "avg_latency_s": 6.024,
       "batch_time_s": 6.15,
       "batch_total_tokens": 500,
       "batch_tokens_per_sec": 81.3
+    },
+    "baseline_graph": {
+      "mode": "graph",
+      "warmup_time_s": 0.09,
+      "avg_latency_s": 0.876,
+      "batch_time_s": 1.05,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 475.4
+    },
+    "prefetch_g8n2s1_graph": {
+      "mode": "graph",
+      "warmup_time_s": 0.21,
+      "avg_latency_s": 6.915,
+      "batch_time_s": 7.19,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 69.6
+    },
+    "prefetch_g8n2s2_graph": {
+      "mode": "graph",
+      "warmup_time_s": 0.21,
+      "avg_latency_s": 6.883,
+      "batch_time_s": 7.16,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 69.8
+    },
+    "prefetch_g4n1s1_graph": {
+      "mode": "graph",
+      "warmup_time_s": 0.21,
+      "avg_latency_s": 6.877,
+      "batch_time_s": 7.15,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 69.9
+    },
+    "prefetch_g4n1s2_graph": {
+      "mode": "graph",
+      "warmup_time_s": 0.21,
+      "avg_latency_s": 6.88,
+      "batch_time_s": 7.17,
+      "batch_total_tokens": 500,
+      "batch_tokens_per_sec": 69.7
     }
   }
 }
