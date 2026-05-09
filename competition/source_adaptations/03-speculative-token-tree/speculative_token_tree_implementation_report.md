@@ -272,11 +272,16 @@ actual_seq_lengths = decode_meta.query_start_loc[1:].to(torch.int64)
 
 ### 6.3 CUDA 测试结果（A800，vLLM dev，Async scheduling enabled）
 
-| 模式 | 吞吐量 (tokens/s) | vs Baseline | Mean Accept Length | Position 0-N 接受率 |
-|------|-------------------|-------------|-------------------|-------------------|
-| Baseline | 86.64 | — | N/A | N/A |
-| Tree n=2 | 100.14 | **+15.6%** | 1.48 | 0.351, 0.125 |
-| Tree n=3 | 98.07 | **+13.2%** | 1.50 | 0.318, 0.119, 0.064 |
+| 模式 | 吞吐量 (tok/s) | 加速比 |
+|------|---------------|--------|
+| Baseline | 86.64 | — |
+| Tree n=2 | 100.14 | **+15.6%** |
+| Tree n=3 | 98.07 | **+13.2%** |
+
+Accept Length 和位置接受率：
+
+- Tree n=2: Mean Accept Length = 1.48, Position 0 = 0.351, Position 1 = 0.125
+- Tree n=3: Mean Accept Length = 1.50, Position 0 = 0.318, Position 1 = 0.119, Position 2 = 0.064
 
 ### 6.4 NPU 测试结果（910B2C，vLLM dev，优化后）
 
@@ -284,19 +289,23 @@ actual_seq_lengths = decode_meta.query_start_loc[1:].to(torch.int64)
 
 **方式 1：与默认 baseline 对比（async 开关不同）**
 
-| 模式 | 吞吐量 (tokens/s) | vs Baseline | Mean Accept Length | Position 0-N 接受率 |
-|------|-------------------|-------------|-------------------|-------------------|
-| Baseline (async=on) | 56.60 | — | N/A | N/A |
-| Tree n=2 (async=off) | 62.49 | +10.4% | 1.46 | 0.349, 0.109 |
-| Tree n=3 (async=off) | 60.23 | +6.4% | 1.50 | 0.318, 0.100, 0.042 |
+| 模式 | 吞吐量 (tok/s) | 加速比 |
+|------|---------------|--------|
+| Baseline (async=on) | 56.60 | — |
+| Tree n=2 (async=off) | 62.49 | +10.4% |
+| Tree n=3 (async=off) | 60.23 | +6.4% |
+
+Accept Length：tree n=2 为 1.46，tree n=3 为 1.50。位置接受率：n=2 为 0.349/0.109，n=3 为 0.318/0.100/0.042。
 
 **方式 2：相同 async 配置对比（都禁用 async scheduling，公平对比）**
 
-| 模式 | 吞吐量 (tokens/s) | vs No-Async Baseline | Mean Accept Length | Position 0-N 接受率 |
-|------|-------------------|---------------------|-------------------|-------------------|
-| Baseline (async=off) | 54.68 | — | N/A | N/A |
-| Tree n=2 (async=off) | 62.49 | **+14.3%** | 1.46 | 0.349, 0.109 |
-| Tree n=3 (async=off) | 60.23 | **+10.2%** | 1.50 | 0.318, 0.100, 0.042 |
+| 模式 | 吞吐量 (tok/s) | 加速比 |
+|------|---------------|--------|
+| Baseline (async=off) | 54.68 | — |
+| Tree n=2 (async=off) | 62.49 | **+14.3%** |
+| Tree n=3 (async=off) | 60.23 | **+10.2%** |
+
+Accept Length：tree n=2 为 1.46，tree n=3 为 1.50。位置接受率与方式1相同。
 
 ### 6.5 CUDA vs NPU 最终对比
 
