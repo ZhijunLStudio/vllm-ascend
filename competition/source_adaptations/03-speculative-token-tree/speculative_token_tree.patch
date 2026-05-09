@@ -1,0 +1,1712 @@
+diff --git a/tests/ut/attention/test_tree_attn_npu.py b/tests/ut/attention/test_tree_attn_npu.py
+new file mode 100644
+index 00000000..cc6efc9b
+--- /dev/null
++++ b/tests/ut/attention/test_tree_attn_npu.py
+@@ -0,0 +1,298 @@
++#
++# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# This file is a part of the vllm-ascend project.
++#
++"""Unit tests for AscendTreeAttentionBackend."""
++
++try:
++    import pytest
++    HAS_PYTEST = True
++except ImportError:
++    HAS_PYTEST = False
++
++import torch
++
++from vllm_ascend.attention.backends.tree_attn import (
++    AscendTreeAttentionBackend,
++    AscendTreeAttentionImpl,
++    AscendTreeAttentionMetadata,
++    AscendTreeAttentionMetadataBuilder,
++    PAD_SIZE,
++    _convert_tree_mask_for_npu,
++    _get_depth_counts,
++    _is_ancestor,
++    _prepare_tree_attn_bias_gpu,
++)
++
++
++class TestTreeMaskConversion:
++    """Tests for GPU to NPU mask conversion."""
++
++    def test_is_ancestor(self):
++        """Test ancestor relationship checking."""
++        # (0,) is an ancestor of (0, 0)
++        assert _is_ancestor((0,), (0, 0)) is True
++        # (0, 0) is not an ancestor of (0,)
++        assert _is_ancestor((0, 0), (0,)) is False
++        # Same node is not its own ancestor
++        assert _is_ancestor((0,), (0,)) is False
++        # (0, 1) is not an ancestor of (0, 0)
++        assert _is_ancestor((0, 1), (0, 0)) is False
++        # (0,) is an ancestor of (0, 0, 0)
++        assert _is_ancestor((0,), (0, 0, 0)) is True
++        # (0, 0) is an ancestor of (0, 0, 0)
++        assert _is_ancestor((0, 0), (0, 0, 0)) is True
++
++    def test_get_depth_counts(self):
++        """Test depth counting."""
++        tree_choices = [(0,), (0, 0), (0, 1), (0, 0, 0), (0, 1, 0)]
++        depth_counts = _get_depth_counts(tree_choices)
++        assert depth_counts == [1, 2, 2]
++
++    def test_prepare_tree_attn_bias_gpu(self):
++        """Test GPU tree mask construction."""
++        tree_choices = [(0,), (0, 0), (0, 1)]
++        depth_counts = _get_depth_counts(tree_choices)
++        mask = _prepare_tree_attn_bias_gpu(
++            tree_choices, depth_counts, dtype=torch.float32, device=torch.device("cpu")
++        )
++
++        # tree_len = 4 (root + 3 drafts)
++        assert mask.shape == (4, 4)
++
++        # All tokens should attend to root (column 0)
++        assert torch.all(mask[:, 0] == 0)
++
++        # Each token should attend to itself
++        for i in range(4):
++            assert mask[i, i] == 0
++
++        # (0, 0) should attend to (0,) - ancestor relationship (child -> parent)
++        assert mask[2, 1] == 0
++
++        # (0, 1) should not attend to (0, 0) - different branches
++        assert mask[3, 2] == float('-inf')
++
++    def test_convert_tree_mask_for_npu(self):
++        """Test GPU to NPU mask conversion."""
++        tree_choices = [(0,), (0, 0), (0, 1)]
++        depth_counts = _get_depth_counts(tree_choices)
++        gpu_mask = _prepare_tree_attn_bias_gpu(
++            tree_choices, depth_counts, dtype=torch.float32, device=torch.device("cpu")
++        )
++
++        npu_mask = _convert_tree_mask_for_npu(gpu_mask, pad_size=PAD_SIZE)
++
++        # Verify shape and dtype
++        assert npu_mask.shape == (PAD_SIZE, PAD_SIZE)
++        assert npu_mask.dtype == torch.int8
++
++        # Verify conversion correctness
++        tree_len = gpu_mask.shape[0]
++
++        # Root column should be all 0 (attend)
++        assert torch.all(npu_mask[:tree_len, 0] == 0)
++
++        # Diagonal should be 0
++        for i in range(tree_len):
++            assert npu_mask[i, i] == 0
++
++        # (0, 0) should attend to (0,) -> npu_mask[2, 1] == 0
++        assert npu_mask[2, 1] == 0
++
++        # (0, 1) should not attend to (0, 0) -> npu_mask[3, 2] == 1
++        assert npu_mask[3, 2] == 1
++
++        # Padding region should be 1 (block)
++        assert torch.all(npu_mask[tree_len:, :] == 1)
++        assert torch.all(npu_mask[:, tree_len:] == 1)
++
++
++class TestAscendTreeAttentionBackend:
++    """Tests for AscendTreeAttentionBackend."""
++
++    def test_backend_name(self):
++        """Test backend name."""
++        assert AscendTreeAttentionBackend.get_name() == "TREE_ATTN"
++
++    def test_backend_classes(self):
++        """Test backend returns correct classes."""
++        assert AscendTreeAttentionBackend.get_impl_cls() == AscendTreeAttentionImpl
++        assert (
++            AscendTreeAttentionBackend.get_builder_cls()
++            == AscendTreeAttentionMetadataBuilder
++        )
++
++    def test_kv_cache_shape(self):
++        """Test KV cache shape calculation."""
++        shape = AscendTreeAttentionBackend.get_kv_cache_shape(
++            num_blocks=100,
++            block_size=16,
++            num_kv_heads=8,
++            head_size=64,
++        )
++        assert shape == (2, 100, 16, 8, 64)
++
++    def test_kv_cache_shape_invalid_block_size(self):
++        """Test invalid block size raises error."""
++        with pytest.raises(ValueError, match="Block size must be a multiple of 16"):
++            AscendTreeAttentionBackend.get_kv_cache_shape(
++                num_blocks=100,
++                block_size=15,  # not a multiple of 16
++                num_kv_heads=8,
++                head_size=64,
++            )
++
++
++class TestAscendTreeAttentionMetadata:
++    """Tests for AscendTreeAttentionMetadata."""
++
++    def test_metadata_creation(self):
++        """Test metadata creation."""
++        metadata = AscendTreeAttentionMetadata(
++            num_actual_tokens=10,
++            num_decode_tokens=5,
++            num_prefills=1,
++            num_decodes=1,
++            max_query_len=5,
++            query_start_loc=torch.tensor([0, 5, 10]),
++            max_seq_len=100,
++            seq_lens=torch.tensor([50, 50]),
++            block_tables=torch.zeros(2, 10, dtype=torch.int32),
++            slot_mapping=torch.zeros(10, dtype=torch.int64),
++            tree_attn_bias=torch.zeros(8, 8),
++            tree_attn_mask=torch.zeros(PAD_SIZE, PAD_SIZE, dtype=torch.int8),
++        )
++
++        assert metadata.num_actual_tokens == 10
++        assert metadata.num_decode_tokens == 5
++        assert metadata.tree_attn_bias is not None
++        assert metadata.tree_attn_mask is not None
++
++
++class TestConvertFunction:
++    """Tests for edge cases in mask conversion."""
++
++    def test_binary_tree_depth_3(self):
++        """Test binary tree with depth 3."""
++        tree_choices = [
++            (0,),
++            (0, 0), (0, 1),
++            (0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1),
++        ]
++        depth_counts = _get_depth_counts(tree_choices)
++        gpu_mask = _prepare_tree_attn_bias_gpu(
++            tree_choices, depth_counts, dtype=torch.float32, device=torch.device("cpu")
++        )
++        npu_mask = _convert_tree_mask_for_npu(gpu_mask)
++
++        # Verify tree_len
++        tree_len = 1 + len(tree_choices)
++        assert gpu_mask.shape[0] == tree_len
++
++        # Verify all ancestor relationships (child -> parent direction)
++        for i, choice in enumerate(tree_choices):
++            row = i + 1
++            # Should attend to root
++            assert npu_mask[row, 0] == 0
++            # Should attend to self
++            assert npu_mask[row, row] == 0
++
++            # Verify ancestor chain (only child -> parent)
++            for j, other_choice in enumerate(tree_choices):
++                col = j + 1
++                if _is_ancestor(other_choice, choice):
++                    # other_choice is ancestor of choice, choice should attend
++                    assert npu_mask[row, col] == 0, (
++                        f"Node {row} ({choice}) should attend to ancestor {col} ({other_choice})"
++                    )
++                elif choice != other_choice and not _is_ancestor(choice, other_choice):
++                    # Neither ancestor nor descendant, should not attend
++                    assert npu_mask[row, col] == 1, (
++                        f"Node {row} ({choice}) should NOT attend to {col} ({other_choice})"
++                    )
++
++    def test_single_token_tree(self):
++        """Test tree with a single draft token."""
++        tree_choices = [(0,)]
++        depth_counts = _get_depth_counts(tree_choices)
++        gpu_mask = _prepare_tree_attn_bias_gpu(
++            tree_choices, depth_counts, dtype=torch.float32, device=torch.device("cpu")
++        )
++        npu_mask = _convert_tree_mask_for_npu(gpu_mask)
++
++        # tree_len = 2 (root + 1 draft)
++        assert gpu_mask.shape == (2, 2)
++        # Root attends to itself (diagonal) and root (column 0)
++        assert npu_mask[0, 0] == 0
++        # Draft attends to root (column 0) and self (diagonal)
++        assert npu_mask[1, 0] == 0
++        assert npu_mask[1, 1] == 0
++
++
++if __name__ == "__main__":
++    if HAS_PYTEST:
++        pytest.main([__file__, "-v"])
++    else:
++        print("=" * 60)
++        print("Running Tree Attention Unit Tests")
++        print("=" * 60)
++
++        # Test 1: _is_ancestor
++        print("\nTest 1: _is_ancestor")
++        assert _is_ancestor((0,), (0, 0)) is True
++        assert _is_ancestor((0, 0), (0,)) is False
++        assert _is_ancestor((0,), (0,)) is False
++        print("PASS: _is_ancestor")
++
++        # Test 2: _get_depth_counts
++        print("\nTest 2: _get_depth_counts")
++        tree_choices = [(0,), (0, 0), (0, 1), (0, 0, 0), (0, 1, 0)]
++        depth_counts = _get_depth_counts(tree_choices)
++        assert depth_counts == [1, 2, 2]
++        print("PASS: _get_depth_counts")
++
++        # Test 3: _prepare_tree_attn_bias_gpu
++        print("\nTest 3: _prepare_tree_attn_bias_gpu")
++        tree_choices = [(0,), (0, 0), (0, 1)]
++        depth_counts = _get_depth_counts(tree_choices)
++        mask = _prepare_tree_attn_bias_gpu(
++            tree_choices, depth_counts, dtype=torch.float32, device=torch.device("cpu")
++        )
++        assert mask.shape == (4, 4)
++        assert torch.all(mask[:, 0] == 0)  # All attend to root
++        for i in range(4):
++            assert mask[i, i] == 0  # Diagonal
++        assert mask[2, 1] == 0  # (0,0) attend (0,)
++        assert mask[3, 2] == float('-inf')  # (0,1) NOT attend (0,0)
++        print("PASS: _prepare_tree_attn_bias_gpu")
++
++        # Test 4: _convert_tree_mask_for_npu
++        print("\nTest 4: _convert_tree_mask_for_npu")
++        npu_mask = _convert_tree_mask_for_npu(mask, pad_size=PAD_SIZE)
++        assert npu_mask.shape == (PAD_SIZE, PAD_SIZE)
++        assert npu_mask.dtype == torch.int8
++        assert torch.all(npu_mask[:4, 0] == 0)  # Root attend
++        print("PASS: _convert_tree_mask_for_npu")
++
++        # Test 5: Backend name
++        print("\nTest 5: AscendTreeAttentionBackend")
++        assert AscendTreeAttentionBackend.get_name() == "TREE_ATTN"
++        assert AscendTreeAttentionBackend.get_impl_cls() == AscendTreeAttentionImpl
++        print("PASS: AscendTreeAttentionBackend")
++
++        print("\n" + "=" * 60)
++        print("All tests passed!")
++        print("=" * 60)
+diff --git a/vllm_ascend/ascend_forward_context.py b/vllm_ascend/ascend_forward_context.py
+index f227cf44..ff347095 100644
+--- a/vllm_ascend/ascend_forward_context.py
++++ b/vllm_ascend/ascend_forward_context.py
+@@ -1,5 +1,6 @@
+ import math
+ from contextlib import contextmanager
++from contextvars import ContextVar
+ from enum import Enum
+ from typing import Any
+ 
+@@ -29,11 +30,33 @@ class MoECommType(Enum):
+     FUSED_MC2 = 3
+ 
+ 
++_MRV2_IN_PROFILE_RUN: ContextVar[bool] = ContextVar("_MRV2_IN_PROFILE_RUN", default=False)
++
++
++@contextmanager
++def override_mrv2_in_profile_run(enabled: bool):
++    """Override MRv2's extra profile-run marker for one forward path.
++
++    MRv2 builds the base forward context inside upstream vLLM, so Ascend's
++    platform hook cannot tell whether the current forward is the extra MC2
++    profile dummy run. A ContextVar keeps this MRv2-only state scoped to the
++    current forward path without adding default fallback behavior.
++    """
++    token = _MRV2_IN_PROFILE_RUN.set(enabled)
++    try:
++        yield
++    finally:
++        _MRV2_IN_PROFILE_RUN.reset(token)
++
++
++def get_mrv2_in_profile_run() -> bool:
++    return _MRV2_IN_PROFILE_RUN.get()
++
++
+ @contextmanager
+ def set_ascend_forward_context(
+     attn_metadata: Any,
+     vllm_config: VllmConfig,
+-    virtual_engine: int = 0,
+     num_tokens: int = 0,
+     num_tokens_across_dp: torch.Tensor | None = None,
+     in_profile_run: bool = False,
+@@ -45,6 +68,7 @@ def set_ascend_forward_context(
+     skip_compiled: bool = False,
+     max_tokens_across_pcp: int = 0,
+     draft_attn_metadatas=None,
++    slot_mapping: dict | list | None = None,
+ ):
+     """A context manager that stores the current forward context,
+     can be attention metadata, etc.
+@@ -58,6 +82,7 @@ def set_ascend_forward_context(
+         "cudagraph_runtime_mode": aclgraph_runtime_mode,
+         "batch_descriptor": batch_descriptor,
+         "skip_compiled": skip_compiled,
++        "slot_mapping": slot_mapping,
+     }
+     with set_forward_context(**forward_context_kwargs):
+         forward_context = get_forward_context()
+diff --git a/vllm_ascend/attention/attention_mask.py b/vllm_ascend/attention/attention_mask.py
+index d76d257c..57175153 100644
+--- a/vllm_ascend/attention/attention_mask.py
++++ b/vllm_ascend/attention/attention_mask.py
+@@ -93,3 +93,29 @@ class AttentionMaskBuilder:
+             return self.get_pcp_mla_mask(model_config.dtype)
+         # Prefill stages use 512x512 mask with appropriate dtype
+         return self.get_mla_mask(model_config.dtype)
++
++
++def get_tree_attn_mask(
++    tree_len: int,
++    gpu_tree_mask: torch.Tensor,
++    device: torch.device,
++    pad_size: int = 2048,
++) -> torch.Tensor:
++    """Convert GPU-format tree mask to NPU format.
++
++    Args:
++        tree_len: tree length (root + draft tokens)
++        gpu_tree_mask: GPU-format mask (tree_len x tree_len), float32
++            Semantics: 0 = attend, -inf = block
++        device: target device
++        pad_size: NPU kernel required pad size, default 2048
++
++    Returns:
++        NPU-format mask (pad_size x pad_size), int8
++        Semantics: 0 = attend, 1 = block
++    """
++    npu_mask = torch.ones((pad_size, pad_size), dtype=torch.int8, device=device)
++    # GPU mask: 0 = attend, -inf = block
++    # NPU mask: 0 = attend, 1 = block
++    npu_mask[:tree_len, :tree_len] = (gpu_tree_mask == float('-inf')).to(torch.int8)
++    return npu_mask
+diff --git a/vllm_ascend/attention/attention_v1.py b/vllm_ascend/attention/attention_v1.py
+index e11d9c39..422c5509 100644
+--- a/vllm_ascend/attention/attention_v1.py
++++ b/vllm_ascend/attention/attention_v1.py
+@@ -849,21 +849,37 @@ class AscendAttentionBackendImpl(AttentionImpl):
+                 learnable_sink=self.sinks,
+             )
+         else:
+-            attn_output, _ = torch_npu.npu_fused_infer_attention_score(
+-                query=query,
+-                key=key,
+-                value=value,
+-                atten_mask=attn_metadata.attn_mask,
+-                block_table=block_table,
+-                input_layout="TND",
+-                block_size=block_size,
+-                actual_seq_lengths=attn_metadata.actual_seq_lengths_q,
+-                actual_seq_lengths_kv=actual_seq_lengths_kv,
+-                num_key_value_heads=self.num_kv_heads,
+-                num_heads=self.num_heads,
+-                scale=self.scale,
+-                sparse_mode=3,
+-            )
++            if not attn_metadata.causal:
++                attn_output, _ = torch_npu.npu_fused_infer_attention_score(
++                    query=query,
++                    key=key,
++                    value=value,
++                    block_table=block_table,
++                    input_layout="TND",
++                    block_size=block_size,
++                    actual_seq_lengths=attn_metadata.actual_seq_lengths_q,
++                    actual_seq_lengths_kv=actual_seq_lengths_kv,
++                    num_key_value_heads=self.num_kv_heads,
++                    num_heads=self.num_heads,
++                    scale=self.scale,
++                    sparse_mode=0,
++                )
++            else:
++                attn_output, _ = torch_npu.npu_fused_infer_attention_score(
++                    query=query,
++                    key=key,
++                    value=value,
++                    atten_mask=attn_metadata.attn_mask,
++                    block_table=block_table,
++                    input_layout="TND",
++                    block_size=block_size,
++                    actual_seq_lengths=attn_metadata.actual_seq_lengths_q,
++                    actual_seq_lengths_kv=actual_seq_lengths_kv,
++                    num_key_value_heads=self.num_kv_heads,
++                    num_heads=self.num_heads,
++                    scale=self.scale,
++                    sparse_mode=3,
++                )
+ 
+             attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
+         output[:num_tokens] = attn_output[:num_tokens]
+@@ -910,6 +926,28 @@ class AscendAttentionBackendImpl(AttentionImpl):
+             actual_seq_kvlen=attn_metadata.actual_seq_lengths_q,
+         )[0]
+ 
++    def do_kv_cache_update(
++        self,
++        layer: torch.nn.Module,
++        key: torch.Tensor,
++        value: torch.Tensor,
++        kv_cache: list[torch.Tensor],
++        slot_mapping: torch.Tensor,
++    ) -> None:
++        if self.attn_type in (AttentionType.ENCODER_ONLY):
++            return
++
++        if self.key_cache is None:
++            self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
++
++        DeviceOperator.reshape_and_cache(
++            key=key,
++            value=value,
++            key_cache=self.key_cache,
++            value_cache=self.value_cache,
++            slot_mapping=slot_mapping,
++        )
++
+     def reshape_and_cache(
+         self,
+         query: torch.Tensor,
+@@ -1384,3 +1422,21 @@ class AscendC8AttentionBackendImpl(AscendAttentionBackendImpl):
+         attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
+         output[:num_tokens] = attn_output
+         return output
++
++
++# Register TREE_ATTN backend for speculative_token_tree
++try:
++    from vllm_ascend.attention.backends.tree_attn import AscendTreeAttentionBackend
++
++    # Register AscendTreeAttentionBackend, overriding GPU version
++    register_backend(
++        AttentionBackendEnum.TREE_ATTN,
++        "vllm_ascend.attention.backends.tree_attn.AscendTreeAttentionBackend"
++    )
++    import logging
++    _logger = logging.getLogger(__name__)
++    _logger.info("Registered AscendTreeAttentionBackend as TREE_ATTN")
++except ImportError as e:
++    import logging
++    _logger = logging.getLogger(__name__)
++    _logger.debug(f"Failed to register AscendTreeAttentionBackend: {e}")
+diff --git a/vllm_ascend/attention/backends/__init__.py b/vllm_ascend/attention/backends/__init__.py
+new file mode 100644
+index 00000000..5abeeeb9
+--- /dev/null
++++ b/vllm_ascend/attention/backends/__init__.py
+@@ -0,0 +1,30 @@
++#
++# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# This file is a part of the vllm-ascend project.
++#
++
++from vllm_ascend.attention.backends.tree_attn import (
++    AscendTreeAttentionBackend,
++    AscendTreeAttentionImpl,
++    AscendTreeAttentionMetadata,
++    AscendTreeAttentionMetadataBuilder,
++)
++
++__all__ = [
++    "AscendTreeAttentionBackend",
++    "AscendTreeAttentionImpl",
++    "AscendTreeAttentionMetadata",
++    "AscendTreeAttentionMetadataBuilder",
++]
+diff --git a/vllm_ascend/attention/backends/tree_attn.py b/vllm_ascend/attention/backends/tree_attn.py
+new file mode 100644
+index 00000000..23b1c37f
+--- /dev/null
++++ b/vllm_ascend/attention/backends/tree_attn.py
+@@ -0,0 +1,700 @@
++#
++# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# This file is a part of the vllm-ascend project.
++#
++"""Ascend NPU Tree Attention Backend for speculative_token_tree."""
++
++import ast
++from dataclasses import dataclass, field
++from enum import Enum
++from typing import ClassVar
++
++import torch
++import torch_npu
++
++from vllm.config import VllmConfig
++from vllm.config.cache import CacheDType
++from vllm.logger import init_logger
++from vllm.v1.attention.backend import (
++    AttentionBackend,
++    AttentionImpl,
++    AttentionMetadataBuilder,
++    AttentionType,
++    CommonAttentionMetadata,
++    MultipleOf,
++)
++from vllm.v1.attention.backends.utils import split_decodes_and_prefills
++from vllm.v1.kv_cache_interface import AttentionSpec
++
++logger = init_logger(__name__)
++
++# NPU kernel requires mask padding to 2048x2048
++PAD_SIZE = 2048
++
++
++# Local AscendAttentionState to avoid circular imports
++class AscendAttentionState(Enum):
++    PrefillNoCache = 0
++    PrefillCacheHit = 1
++    DecodeOnly = 2
++    ChunkedPrefill = 3
++    SpecDecoding = 4
++
++
++@dataclass
++class AscendMetadataForTree:
++    """Simplified AscendMetadata for tree attention.
++
++    Avoids circular dependency with attention_v1.py.
++    """
++    # Basic Properties
++    attn_mask: torch.Tensor | None = None
++    attn_state: "AscendAttentionState" = AscendAttentionState.ChunkedPrefill
++
++    # Number of tokens excluding padding.
++    num_actual_tokens: int = 0
++    num_decode_tokens: int = 0
++    num_prefills: int = 0
++    num_decodes: int = 0
++    num_prefill_tokens: int = 0
++
++    # Sequence lengths
++    seq_lens: torch.Tensor = None
++    query_start_loc: torch.Tensor = None
++    max_query_len: int | None = None
++    max_seq_len: int = 0
++
++    # KV Cache Related Properties
++    block_tables: torch.Tensor = None
++    slot_mapping: torch.Tensor = None
++
++
++class AscendTreeAttentionBackend(AttentionBackend):
++    """Tree Attention Backend for Ascend NPU."""
++
++    supported_dtypes: ClassVar[list[torch.dtype]] = [torch.float16, torch.bfloat16]
++    supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = [
++        "auto",
++        "float16",
++        "bfloat16",
++    ]
++    forward_includes_kv_cache_update: bool = False
++
++    @staticmethod
++    def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:
++        return [MultipleOf(16)]
++
++    @classmethod
++    def get_supported_head_sizes(cls) -> list[int]:
++        return [32, 64, 96, 128, 160, 192, 224, 256]
++
++    @staticmethod
++    def get_name() -> str:
++        return "TREE_ATTN"
++
++    @staticmethod
++    def get_impl_cls() -> type["AscendTreeAttentionImpl"]:
++        return AscendTreeAttentionImpl
++
++    @staticmethod
++    def get_kv_cache_shape(
++        num_blocks: int,
++        block_size: int,
++        num_kv_heads: int,
++        head_size: int,
++        cache_dtype_str: str = "auto",
++    ) -> tuple[int, ...]:
++        if block_size % 16 != 0:
++            raise ValueError("Block size must be a multiple of 16.")
++        return (2, num_blocks, block_size, num_kv_heads, head_size)
++
++    @staticmethod
++    def get_builder_cls() -> type["AscendTreeAttentionMetadataBuilder"]:
++        return AscendTreeAttentionMetadataBuilder
++
++    @staticmethod
++    def use_cascade_attention(*args, **kwargs) -> bool:
++        return False
++
++
++@dataclass
++class AscendTreeAttentionMetadata(AscendMetadataForTree):
++    """Extends AscendMetadataForTree with tree attention fields.
++
++    tree_attn_bias: GPU-format float32 mask (0=attend, -inf=block), for reference
++    tree_attn_mask: NPU-format int8 mask (0=attend, 1=block, pad 2048x2048)
++    """
++    tree_attn_bias: torch.Tensor | None = None
++    tree_attn_mask: torch.Tensor | None = None
++
++    # Cached Prefill/decode metadata.
++    _cached_prefill_metadata: "AscendTreeAttentionMetadata | None" = field(
++        default=None, repr=False
++    )
++    _cached_decode_metadata: "AscendTreeAttentionMetadata | None" = field(
++        default=None, repr=False
++    )
++
++    @property
++    def prefill_metadata(self) -> "AscendTreeAttentionMetadata | None":
++        if self.num_prefills == 0:
++            return None
++
++        if self._cached_prefill_metadata is not None:
++            return self._cached_prefill_metadata
++
++        q_start_loc = self.query_start_loc[self.num_decodes:]
++        q_seqlens = torch.diff(q_start_loc)
++        kv_seqlens = self.seq_lens[self.num_decodes:]
++
++        self._cached_prefill_metadata = AscendTreeAttentionMetadata(
++            num_actual_tokens=self.num_prefill_tokens,
++            max_query_len=int(q_seqlens.max().item()),
++            query_start_loc=q_start_loc - q_start_loc[0],
++            max_seq_len=int(kv_seqlens.max().item()),
++            seq_lens=kv_seqlens,
++            block_tables=self.block_tables[self.num_decodes:],
++            slot_mapping=self.slot_mapping[self.num_decode_tokens:],
++            tree_attn_mask=None,  # prefill does not need tree mask
++        )
++        return self._cached_prefill_metadata
++
++    @property
++    def decode_metadata(self) -> "AscendTreeAttentionMetadata | None":
++        if self.num_decode_tokens == 0:
++            return None
++
++        if self._cached_decode_metadata is not None:
++            return self._cached_decode_metadata
++
++        q_start_loc = self.query_start_loc[:self.num_decodes + 1]
++        q_seqlens = torch.diff(q_start_loc)
++        kv_seqlens = self.seq_lens[:self.num_decodes]
++
++        self._cached_decode_metadata = AscendTreeAttentionMetadata(
++            num_actual_tokens=self.num_decode_tokens,
++            max_query_len=int(q_seqlens.max().item()),
++            query_start_loc=q_start_loc,
++            max_seq_len=int(kv_seqlens.max().item()),
++            seq_lens=kv_seqlens,
++            block_tables=self.block_tables[:self.num_decodes],
++            slot_mapping=self.slot_mapping[:self.num_decode_tokens],
++            tree_attn_bias=self.tree_attn_bias,
++            tree_attn_mask=self.tree_attn_mask,
++        )
++        return self._cached_decode_metadata
++
++
++def _is_ancestor(potential_ancestor: tuple, potential_descendant: tuple) -> bool:
++    """Check if potential_ancestor is an ancestor prefix of potential_descendant."""
++    if len(potential_ancestor) >= len(potential_descendant):
++        return False
++    return potential_descendant[:len(potential_ancestor)] == potential_ancestor
++
++
++def _get_depth_counts(sorted_tree_choices: list[tuple[int, ...]]) -> list[int]:
++    """Count the number of nodes at each depth level of the tree."""
++    depth_counts = []
++    prev_depth = 0
++    for path in sorted_tree_choices:
++        depth = len(path)
++        if depth != prev_depth:
++            depth_counts.append(0)
++        depth_counts[depth - 1] += 1
++        prev_depth = depth
++    return depth_counts
++
++
++def _prepare_tree_attn_bias_gpu(
++    sorted_tree_choices: list[tuple[int, ...]],
++    depth_counts: list[int],
++    dtype: torch.dtype | None = None,
++    device: torch.device | None = None,
++) -> torch.Tensor:
++    """Build GPU-format tree attention mask (float32, 0=attend, -inf=block).
++
++    Logic is identical to _prepare_tree_attn_bias in upstream vLLM tree_attn.py.
++    """
++    tree_len = len(sorted_tree_choices) + 1  # +1 for root
++    tree_attn_mask = torch.full(
++        (tree_len, tree_len), -torch.inf, device=device, dtype=dtype
++    )
++
++    # Diagonal: each token attends to itself
++    for i in range(tree_len):
++        tree_attn_mask[i, i] = 0
++
++    # All tokens attend to root (column 0)
++    tree_attn_mask[:, 0] = 0
++
++    # Ancestry: draft tokens attend to their ancestor nodes
++    start = 0
++    for i in range(len(depth_counts)):
++        for j in range(depth_counts[i]):
++            cur_tree_choice = sorted_tree_choices[start + j]
++            # Retrieve ancestor position.
++            if len(cur_tree_choice) == 1:
++                continue
++            ancestor_idx = []
++            for c in range(len(cur_tree_choice) - 1):
++                ancestor_idx.append(
++                    sorted_tree_choices.index(cur_tree_choice[: c + 1]) + 1
++                )
++            tree_attn_mask[j + start + 1, ancestor_idx] = 0
++        start += depth_counts[i]
++
++    return tree_attn_mask
++
++
++def _convert_tree_mask_for_npu(
++    gpu_mask: torch.Tensor,
++    pad_size: int = PAD_SIZE,
++) -> torch.Tensor:
++    """Convert GPU float32 mask to NPU int8 mask.
++
++    GPU: -inf = block, 0 = attend
++    NPU: 0 = attend, 1 = block (int8)
++
++    Args:
++        gpu_mask: GPU-format mask (tree_len x tree_len), float32
++        pad_size: NPU kernel required pad size, default 2048
++
++    Returns:
++        NPU-format mask (pad_size x pad_size), int8
++    """
++    tree_len = gpu_mask.shape[0]
++    npu_mask = torch.ones((pad_size, pad_size), dtype=torch.int8)
++    # GPU mask where 0 → NPU mask 0 (attend)
++    # GPU mask where -inf → NPU mask 1 (block)
++    npu_mask[:tree_len, :tree_len] = (gpu_mask == float('-inf')).to(torch.int8)
++    return npu_mask
++
++
++class AscendTreeAttentionMetadataBuilder(
++    AttentionMetadataBuilder[AscendTreeAttentionMetadata]
++):
++    """NPU Tree Attention Metadata Builder.
++
++    Parses speculative_token_tree config and builds NPU-adapted tree mask.
++    """
++
++    def __init__(
++        self,
++        kv_cache_spec: AttentionSpec,
++        layer_names: list[str],
++        vllm_config: VllmConfig,
++        device: torch.device,
++    ):
++        super().__init__(kv_cache_spec, layer_names, vllm_config, device)
++
++        self.block_size = kv_cache_spec.block_size
++        self.vllm_config = vllm_config
++        self.device = device
++
++        # Parse speculative_token_tree config
++        spec_config = vllm_config.speculative_config
++        spec_token_tree: str | None = None
++        if spec_config:
++            spec_token_tree = spec_config.speculative_token_tree
++
++        tree_choices: list[tuple[int, ...]] = (
++            ast.literal_eval(spec_token_tree)
++            if spec_token_tree is not None
++            else [(0,)]
++        )
++
++        # Build GPU-format tree attention bias
++        depth_counts = _get_depth_counts(tree_choices)
++        self.tree_attn_bias = _prepare_tree_attn_bias_gpu(
++            tree_choices,
++            depth_counts,
++            dtype=torch.float32,
++            device=device,
++        )
++
++        # Convert to NPU-format mask
++        self.tree_attn_mask = _convert_tree_mask_for_npu(
++            self.tree_attn_bias, pad_size=PAD_SIZE
++        )
++
++        self.reorder_batch_threshold = self.tree_attn_bias.shape[0]
++
++        # Mask caching: precompute all possible slice masks
++        self._mask_cache: dict[tuple[int, int], torch.Tensor] = {}
++        self._bias_cache: dict[tuple[int, int], torch.Tensor] = {}
++        self._precompute_slice_masks()
++
++    def _precompute_slice_masks(self):
++        """Precompute all possible slice masks to avoid redundant computation."""
++        tree_len = self.tree_attn_bias.shape[0]
++        # Precompute all possible [start:end, start:end] slices
++        for start in range(1, tree_len):
++            for end in range(start + 1, tree_len + 1):
++                key = (start, end)
++                sliced_bias = self.tree_attn_bias[start:end, start:end].contiguous()
++                self._bias_cache[key] = sliced_bias
++                self._mask_cache[key] = _convert_tree_mask_for_npu(
++                    sliced_bias, pad_size=PAD_SIZE
++                )
++
++    def build(
++        self,
++        common_prefix_len: int,
++        common_attn_metadata: CommonAttentionMetadata,
++        fast_build: bool = False,
++    ) -> AscendTreeAttentionMetadata:
++        decode_threshold = self.tree_attn_bias.shape[0]
++        num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
++            split_decodes_and_prefills(
++                common_attn_metadata, decode_threshold=decode_threshold
++            )
++        )
++
++        num_actual_tokens = common_attn_metadata.num_actual_tokens
++        q_start_loc = common_attn_metadata.query_start_loc
++        max_query_len = common_attn_metadata.max_query_len
++        kv_seqlens = common_attn_metadata.seq_lens
++        max_seq_len = common_attn_metadata.max_seq_len
++        block_table = common_attn_metadata.block_table_tensor
++        slot_mapping = common_attn_metadata.slot_mapping
++
++        return AscendTreeAttentionMetadata(
++            num_actual_tokens=num_actual_tokens,
++            num_prefill_tokens=num_prefill_tokens,
++            num_decode_tokens=num_decode_tokens,
++            num_prefills=num_prefills,
++            num_decodes=num_decodes,
++            max_query_len=max_query_len,
++            query_start_loc=q_start_loc,
++            max_seq_len=max_seq_len,
++            seq_lens=kv_seqlens,
++            block_tables=block_table,
++            slot_mapping=slot_mapping,
++            tree_attn_bias=self.tree_attn_bias,
++            tree_attn_mask=self.tree_attn_mask,
++        )
++
++    def build_for_drafting(
++        self,
++        common_attn_metadata: CommonAttentionMetadata,
++        draft_index: int,
++    ) -> AscendTreeAttentionMetadata:
++        """Build attention metadata for a tree level.
++
++        draft_index=0: prefill (root level), use empty bias
++        draft_index>0: draft level, slice tree mask (uses cache)
++        """
++        # Cache the original tree attention bias.
++        orig_tree_attn_bias = self.tree_attn_bias
++        orig_tree_attn_mask = self.tree_attn_mask
++
++        if draft_index == 0:
++            # Use prefill for drafting at the root level.
++            self.tree_attn_bias = torch.empty(0)
++            self.tree_attn_mask = torch.empty(0, dtype=torch.int8)
++        else:
++            # Use cached slice mask to avoid redundant computation
++            start, end = 1, 1 + common_attn_metadata.max_query_len
++            cache_key = (start, end)
++            if cache_key in self._bias_cache:
++                self.tree_attn_bias = self._bias_cache[cache_key]
++                self.tree_attn_mask = self._mask_cache[cache_key]
++            else:
++                # Cache miss, fall back to on-the-fly computation
++                self.tree_attn_bias = self.tree_attn_bias[start:end, start:end].contiguous()
++                self.tree_attn_mask = _convert_tree_mask_for_npu(
++                    self.tree_attn_bias, pad_size=PAD_SIZE
++                )
++
++        # Build attention metadata.
++        attn_metadata = self.build(0, common_attn_metadata, fast_build=True)
++
++        # Reset the tree attention bias to the original value.
++        self.tree_attn_bias = orig_tree_attn_bias
++        self.tree_attn_mask = orig_tree_attn_mask
++        return attn_metadata
++
++
++class AscendTreeAttentionImpl(AttentionImpl):
++    """NPU Tree Attention Implementation.
++
++    Uses npu_fused_infer_attention_score for attention computation.
++    - Prefill: BSH layout + sparse_mode=0
++    - Decode: TND layout + sparse_mode=3 + tree_attn_mask
++    """
++
++    def __init__(
++        self,
++        num_heads: int,
++        head_size: int,
++        scale: float,
++        num_kv_heads: int,
++        alibi_slopes: list[float] | None,
++        sliding_window: int | None,
++        kv_cache_dtype: str,
++        logits_soft_cap: float | None = None,
++        attn_type: AttentionType = AttentionType.DECODER,
++        kv_sharing_target_layer_name: str | None = None,
++    ) -> None:
++        self.num_heads = num_heads
++        self.head_size = head_size
++        self.scale = float(scale)
++        self.num_kv_heads = num_kv_heads
++        self.num_queries_per_kv = self.num_heads // self.num_kv_heads
++        self.kv_cache_dtype = kv_cache_dtype
++        self.kv_sharing_target_layer_name = kv_sharing_target_layer_name
++        if alibi_slopes is not None:
++            alibi_slopes = torch.tensor(alibi_slopes, dtype=torch.float32)
++        self.alibi_slopes = alibi_slopes
++        if logits_soft_cap is None:
++            logits_soft_cap = 0
++        self.logits_soft_cap = logits_soft_cap
++        if sliding_window is None:
++            self.sliding_window = (-1, -1)
++        else:
++            self.sliding_window = (sliding_window - 1, 0)
++
++        if attn_type != AttentionType.DECODER:
++            raise NotImplementedError(
++                "Encoder self-attention and encoder/decoder cross-attention "
++                "are not implemented for AscendTreeAttentionImpl."
++            )
++
++    def do_kv_cache_update(
++        self,
++        layer: torch.nn.Module,
++        key: torch.Tensor,
++        value: torch.Tensor,
++        kv_cache: torch.Tensor,
++        slot_mapping: torch.Tensor,
++    ) -> None:
++        """Update KV cache."""
++        from vllm import _custom_ops as ops
++
++        key_cache, value_cache = kv_cache.unbind(0)
++        ops.reshape_and_cache_flash(
++            key,
++            value,
++            key_cache,
++            value_cache,
++            slot_mapping,
++            self.kv_cache_dtype,
++            layer._k_scale,
++            layer._v_scale,
++        )
++
++    def forward(
++        self,
++        layer: torch.nn.Module,
++        query: torch.Tensor,
++        key: torch.Tensor,
++        value: torch.Tensor,
++        kv_cache: torch.Tensor,
++        attn_metadata: AscendTreeAttentionMetadata,
++        output: torch.Tensor,
++        output_scale: torch.Tensor | None = None,
++        output_block_scale: torch.Tensor | None = None,
++    ) -> torch.Tensor:
++        """Forward pass with TreeAttention on NPU.
++
++        Args:
++            query: shape = [num_tokens, num_heads, head_size]
++            key: shape = [num_tokens, num_kv_heads, head_size]
++            value: shape = [num_tokens, num_kv_heads, head_size]
++            kv_cache: shape = [2, num_blocks, block_size, num_kv_heads, head_size]
++            attn_metadata: Metadata for attention.
++            output: shape = [num_tokens, num_heads * head_size]
++
++        Returns:
++            shape = [num_tokens, num_heads * head_size]
++        """
++        if output_scale is not None or output_block_scale is not None:
++            raise NotImplementedError(
++                "fused output quantization is not yet supported for "
++                "AscendTreeAttentionImpl"
++            )
++
++        if attn_metadata is None:
++            # Profiling run.
++            return output.fill_(0)
++
++        key_cache, value_cache = kv_cache.unbind(0)
++
++        num_actual_tokens = attn_metadata.num_actual_tokens
++        num_decode_tokens = attn_metadata.num_decode_tokens
++
++        # Prefill: BSH layout + sparse_mode=0
++        if prefill_meta := attn_metadata.prefill_metadata:
++            self._forward_prefill(
++                query=query[num_decode_tokens:num_actual_tokens],
++                key=key[num_decode_tokens:num_actual_tokens],
++                value=value[num_decode_tokens:num_actual_tokens],
++                output=output[num_decode_tokens:num_actual_tokens],
++                prefill_meta=prefill_meta,
++                layer=layer,
++            )
++
++        # Decode: TND layout + sparse_mode=3 + tree_attn_mask
++        if decode_meta := attn_metadata.decode_metadata:
++            self._forward_decode(
++                query=query[:num_decode_tokens],
++                key_cache=key_cache,
++                value_cache=value_cache,
++                output=output[:num_decode_tokens],
++                decode_meta=decode_meta,
++                layer=layer,
++            )
++
++        return output
++
++    def _forward_prefill(
++        self,
++        query: torch.Tensor,
++        key: torch.Tensor,
++        value: torch.Tensor,
++        output: torch.Tensor,
++        prefill_meta: AscendTreeAttentionMetadata,
++        layer: torch.nn.Module,
++    ):
++        """Prefill phase: BSH layout + sparse_mode=0.
++
++        Uses full custom mask if available.
++        """
++        # BSH layout: [batch, seq, hidden]
++        # Reshape [tokens, heads, head_size] to [1, tokens, heads * head_size]
++        batch_size = prefill_meta.query_start_loc.shape[0] - 1
++        q_bsh = query.view(batch_size, -1, self.num_heads * self.head_size)
++        k_bsh = key.view(batch_size, -1, self.num_kv_heads * self.head_size)
++        v_bsh = value.view(batch_size, -1, self.num_kv_heads * self.head_size)
++
++        # Standard prefill mask (causal mask)
++        attn_mask = prefill_meta.attn_mask
++
++        attn_output, _ = torch_npu.npu_fused_infer_attention_score(
++            query=q_bsh,
++            key=k_bsh,
++            value=v_bsh,
++            atten_mask=attn_mask,
++            input_layout="BSH",
++            num_heads=self.num_heads,
++            num_key_value_heads=self.num_kv_heads,
++            scale=self.scale,
++            sparse_mode=0,
++        )
++
++        # Flatten output back to [tokens, heads * head_size]
++        output.copy_(attn_output.view(-1, self.num_heads * self.head_size))
++
++    def _forward_decode(
++        self,
++        query: torch.Tensor,
++        key_cache: torch.Tensor,
++        value_cache: torch.Tensor,
++        output: torch.Tensor,
++        decode_meta: AscendTreeAttentionMetadata,
++        layer: torch.nn.Module,
++    ):
++        """Decode phase: TND layout + sparse_mode=3 + tree_attn_mask.
++
++        Uses tree attention mask to restrict attend scope.
++        Supports ACL Graph: when is_draft_model=True, precompute workspace and use
++        .out() variant to avoid extra memory allocation.
++        """
++        num_tokens = decode_meta.num_actual_tokens
++        query = query[:num_tokens]
++
++        # Prepare actual_seq_lengths (use tensor to avoid CPU-GPU sync)
++        actual_seq_lengths = decode_meta.query_start_loc[1:].to(torch.int64)
++        actual_seq_lengths_kv = decode_meta.seq_lens.to(torch.int64)
++
++        # Use tree attention mask
++        tree_mask = decode_meta.tree_attn_mask
++        if tree_mask is None:
++            # Fall back to standard causal mask if tree mask is unavailable
++            tree_mask = decode_meta.attn_mask
++
++        block_size = key_cache.shape[1]
++
++        # ACL Graph: when in draft model context, precompute workspace and use .out()
++        from vllm_ascend.ascend_forward_context import _EXTRA_CTX
++
++        if _EXTRA_CTX.is_draft_model:
++            from vllm_ascend.compilation.acl_graph import (
++                get_draft_graph_params,
++                update_draft_graph_params_workspaces,
++            )
++
++            graph_params = get_draft_graph_params()
++            num_input_tokens = num_tokens
++            workspace = graph_params.workspaces.get(num_input_tokens)
++            if workspace is None:
++                workspace = (
++                    torch_npu._npu_fused_infer_attention_score_get_max_workspace(
++                        query=query,
++                        key=key_cache,
++                        value=value_cache,
++                        atten_mask=tree_mask,
++                        block_table=decode_meta.block_tables,
++                        input_layout="TND",
++                        block_size=block_size,
++                        actual_seq_lengths=actual_seq_lengths,
++                        actual_seq_lengths_kv=actual_seq_lengths_kv,
++                        num_key_value_heads=self.num_kv_heads,
++                        num_heads=self.num_heads,
++                        sparse_mode=3,
++                        scale=self.scale,
++                    )
++                )
++                update_draft_graph_params_workspaces(
++                    num_input_tokens, workspace
++                )
++
++            attn_output = torch.empty_like(query)
++            softmax_lse = torch.empty(1, dtype=query.dtype, device=query.device)
++            torch_npu.npu_fused_infer_attention_score.out(
++                query=query,
++                key=key_cache,
++                value=value_cache,
++                atten_mask=tree_mask,
++                block_table=decode_meta.block_tables,
++                input_layout="TND",
++                block_size=block_size,
++                actual_seq_lengths=actual_seq_lengths,
++                actual_seq_lengths_kv=actual_seq_lengths_kv,
++                num_key_value_heads=self.num_kv_heads,
++                num_heads=self.num_heads,
++                sparse_mode=3,
++                scale=self.scale,
++                out=(attn_output, softmax_lse),
++            )
++        else:
++            attn_output, _ = torch_npu.npu_fused_infer_attention_score(
++                query=query,
++                key=key_cache,
++                value=value_cache,
++                atten_mask=tree_mask,
++                block_table=decode_meta.block_tables,
++                input_layout="TND",
++                block_size=block_size,
++                actual_seq_lengths=actual_seq_lengths,
++                actual_seq_lengths_kv=actual_seq_lengths_kv,
++                num_key_value_heads=self.num_kv_heads,
++                num_heads=self.num_heads,
++                scale=self.scale,
++                sparse_mode=3,
++            )
++
++        attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
++        output[:num_tokens] = attn_output[:num_tokens]
+diff --git a/vllm_ascend/spec_decode/eagle_proposer.py b/vllm_ascend/spec_decode/eagle_proposer.py
+index 9323f9e0..447df3ff 100644
+--- a/vllm_ascend/spec_decode/eagle_proposer.py
++++ b/vllm_ascend/spec_decode/eagle_proposer.py
+@@ -46,7 +46,12 @@ from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
+ from vllm_ascend.compilation.acl_graph import ACLGraphWrapper, update_full_graph_params
+ from vllm_ascend.ops.triton.spec_decode.utils import prepare_inputs_padded_kernel
+ from vllm_ascend.ops.triton.triton_utils import get_vectorcore_num
+-from vllm_ascend.utils import enable_sp, lmhead_tp_enable, shared_expert_dp_enabled
++from vllm_ascend.utils import enable_sp, lmhead_tp_enable, shared_expert_dp_enabled, vllm_version_is
++
++if not vllm_version_is("0.19.0"):
++    from vllm.model_executor.models.qwen3_dflash import DFlashQwen3ForCausalLM
++else:
++    DFlashQwen3ForCausalLM = None
+ 
+ # Currently we will fix block size to a small one since `num_reqs` can't be too large
+ _PREPARE_INPUTS_BLOCK_SIZE = 4
+@@ -243,8 +248,11 @@ class SpecDecodeBaseProposer(EagleProposer):
+         self._maybe_share_embeddings(target_language_model)
+         self._maybe_share_lm_head(model)
+ 
+-        if self.parallel_drafting and self.pass_hidden_states_to_model:
+-            assert self.parallel_drafting_hidden_state_tensor is not None
++        if (
++            self.parallel_drafting
++            and self.pass_hidden_states_to_model
++            and self.parallel_drafting_hidden_state_tensor is not None
++        ):
+             self.parallel_drafting_hidden_state_tensor.copy_(
+                 self.model.combine_hidden_states(self.model.mask_hidden.view(3 * self.hidden_size))
+                 if self.eagle3_use_aux_hidden_state
+@@ -317,8 +325,8 @@ class SpecDecodeBaseProposer(EagleProposer):
+     def _maybe_share_lm_head(self, model: nn.Module) -> None:
+         # some model definition do not define lm_head explicitly
+         # and reuse embed_tokens for lm_head, e.g., CohereForCausalLM
+-        if self.method == "eagle" and hasattr(model, "lm_head"):
+-            logger.info("Loading EAGLE LM head weights from the target model.")
++        if self.method in ("eagle", "dflash") and hasattr(model, "lm_head"):
++            logger.info("Loading EAGLE or DFLASH LM head weights from the target model.")
+             if supports_multimodal(model):
+                 self.model.lm_head = model.get_language_model().lm_head
+             else:
+@@ -493,8 +501,8 @@ class SpecDecodeBaseProposer(EagleProposer):
+         if token_indices_to_sample is None:
+             token_indices_to_sample = common_attn_metadata.query_start_loc[1:] - 1
+ 
+-        if self.method == "eagle3":
+-            assert isinstance(self.get_model(), Eagle3LlamaForCausalLM)
++        if self.method in ("eagle3", "dflash"):
++            assert isinstance(self.get_model(), (Eagle3LlamaForCausalLM, DFlashQwen3ForCausalLM))
+             target_hidden_states = self.model.combine_hidden_states(target_hidden_states)
+             assert target_hidden_states.shape[-1] == self.hidden_size
+ 
+@@ -720,6 +728,27 @@ class SpecDecodeBaseProposer(EagleProposer):
+         token_indices_to_sample_len = token_indices_to_sample.shape[0]
+         self.token_indices_to_sample[:token_indices_to_sample_len].copy_(token_indices_to_sample)
+ 
++        from vllm_ascend.attention.backends.tree_attn import (
++            AscendTreeAttentionMetadata,
++            AscendTreeAttentionMetadataBuilder,
++        )
++
++        # Check if tree attention is active. If so, use propose_tree
++        # instead of the standard multi-step loop.
++        if any(isinstance(md, AscendTreeAttentionMetadata) for md in per_layer_attn_metadata.values()):
++            return self._propose_tree(
++                batch_size=batch_size,
++                num_tokens=num_tokens,
++                num_input_tokens=num_input_tokens,
++                num_tokens_across_dp=num_tokens_across_dp,
++                common_attn_metadata=common_attn_metadata,
++                inputs_embeds=inputs_embeds,
++                token_indices_to_sample=token_indices_to_sample,
++                token_indices_to_sample_len=token_indices_to_sample_len,
++                aclgraph_runtime_mode=aclgraph_runtime_mode,
++                batch_descriptor=batch_descriptor,
++            )
++
+         with set_ascend_forward_context(
+             multi_steps_attn_metadata[0],
+             self.vllm_config,
+@@ -769,13 +798,16 @@ class SpecDecodeBaseProposer(EagleProposer):
+         model_input_ids = self.input_ids[:num_input_tokens]
+         model_positions = self._get_positions(num_input_tokens)
+ 
+-        model_kwargs = {
+-            "input_ids": model_input_ids,
+-            "positions": model_positions,
+-            "inputs_embeds": inputs_embeds,
+-        }
++        if self.method == "dflash":
++            model_kwargs = self.build_model_inputs_first_pass(num_input_tokens)
++        else:
++            model_kwargs = {
++                "input_ids": model_input_ids,
++                "positions": model_positions,
++                "inputs_embeds": inputs_embeds,
++            }
+ 
+-        if self.pass_hidden_states_to_model:
++        if self.pass_hidden_states_to_model and self.method != "dflash":
+             model_hidden_states = self.hidden_states[:num_input_tokens]
+             model_hidden_states, model_positions = self.maybe_pad_and_reduce(model_hidden_states, model_positions)
+             model_kwargs["hidden_states"] = model_hidden_states
+@@ -789,9 +821,10 @@ class SpecDecodeBaseProposer(EagleProposer):
+         else:
+             last_hidden_states, hidden_states = ret_hidden_states
+ 
+-        last_hidden_states, model_positions, hidden_states = self.maybe_all_gather_and_unpad(
+-            last_hidden_states, model_positions, hidden_states
+-        )
++        if self.method != "dflash":
++            last_hidden_states, model_positions, hidden_states = self.maybe_all_gather_and_unpad(
++                last_hidden_states, model_positions, hidden_states
++            )
+ 
+         num_indices = token_indices_to_sample.shape[0]
+         if self.pcp_size > 1:
+@@ -1142,7 +1175,7 @@ class SpecDecodeBaseProposer(EagleProposer):
+             return total_num_output_tokens, token_indices_to_sample, new_cad, None
+ 
+     def model_returns_tuple(self) -> bool:
+-        return self.method not in ("mtp", "draft_model")
++        return self.method not in ("mtp", "draft_model", "dflash")
+ 
+     def attn_update_stack_num_spec_norm(
+         self,
+@@ -1662,10 +1695,8 @@ class SpecDecodeBaseProposer(EagleProposer):
+         hidden_states: torch.Tensor,
+         positions: torch.Tensor,
+     ) -> tuple[torch.Tensor, torch.Tensor]:
+-        if self.is_multimodal_model and _EXTRA_CTX.flash_comm_v1_enabled:
+-            return hidden_states, positions
+         if self.method == "mtp":
+-            if _EXTRA_CTX.flash_comm_v1_enabled:
++            if _EXTRA_CTX.flash_comm_v1_enabled and not self.is_multimodal_model:
+                 hidden_states = torch.ops.vllm.maybe_pad_and_reduce(hidden_states)
+                 positions = positions.unsqueeze(-1)
+                 positions = torch.ops.vllm.maybe_pad_and_reduce(positions)
+@@ -1712,3 +1743,321 @@ class AscendEagleProposer(SpecDecodeBaseProposer):
+             pass_hidden_states_to_model=True,
+             runner=runner,
+         )
++
++    def _propose_tree(
++        self,
++        batch_size: int,
++        num_tokens: int,
++        num_input_tokens: int,
++        num_tokens_across_dp: torch.Tensor,
++        common_attn_metadata: CommonAttentionMetadata,
++        inputs_embeds: torch.Tensor | None,
++        token_indices_to_sample: torch.Tensor,
++        token_indices_to_sample_len: int,
++        aclgraph_runtime_mode,
++        batch_descriptor,
++    ) -> torch.Tensor:
++        """Run the first model forward pass and then use tree attention for
++        draft generation.
++
++        This mirrors native vLLM's _propose logic when TreeAttentionMetadata
++        is detected: run the draft model once, compute logits, then call
++        propose_tree to generate all tree draft tokens.
++        """
++        from vllm_ascend.attention.backends.tree_attn import AscendTreeAttentionMetadata
++
++        # Build the first-step attention metadata (same as standard path).
++        builder = self.draft_attn_groups[0].get_metadata_builder()
++        attn_metadata = builder.build(0, common_attn_metadata, self.runner.get_model())
++
++        per_layer_attn_metadata = dict()
++        for layer_name in self.attn_layer_names:
++            per_layer_attn_metadata[layer_name] = attn_metadata
++        multi_steps_attn_metadata = [per_layer_attn_metadata]
++
++        # Run the first model forward pass to get hidden states.
++        model_input_ids = self.input_ids[:num_input_tokens]
++        model_positions = self._get_positions(num_input_tokens)
++        model_kwargs = {
++            "input_ids": model_input_ids,
++            "positions": model_positions,
++            "inputs_embeds": inputs_embeds,
++        }
++        if self.pass_hidden_states_to_model:
++            model_hidden_states = self.hidden_states[:num_input_tokens]
++            model_hidden_states, model_positions = self.maybe_pad_and_reduce(
++                model_hidden_states, model_positions
++            )
++            model_kwargs["hidden_states"] = model_hidden_states
++            if self.method == "mtp":
++                model_kwargs["positions"] = model_positions
++
++        with set_ascend_forward_context(
++            multi_steps_attn_metadata[0],
++            self.vllm_config,
++            num_tokens=num_input_tokens,
++            num_tokens_across_dp=num_tokens_across_dp,
++            num_actual_tokens=num_tokens,
++            batch_descriptor=batch_descriptor,
++            aclgraph_runtime_mode=aclgraph_runtime_mode,
++            is_draft_model=True,
++            draft_attn_metadatas=multi_steps_attn_metadata,
++        ):
++            forward_context = get_forward_context()
++            if forward_context is not None:
++                forward_context.moe_layer_index = 0
++
++            ret_hidden_states = self.model(**model_kwargs)
++            if not self.model_returns_tuple():
++                last_hidden_states = ret_hidden_states
++                hidden_states = last_hidden_states
++            else:
++                last_hidden_states, hidden_states = ret_hidden_states
++
++        last_hidden_states, model_positions, hidden_states = (
++            self.maybe_all_gather_and_unpad(
++                last_hidden_states, model_positions, hidden_states
++            )
++        )
++
++        sample_hidden_states = last_hidden_states[token_indices_to_sample]
++        logits = self.model.compute_logits(sample_hidden_states)
++
++        if self.uses_mrope:
++            positions = self.mrope_positions[:, token_indices_to_sample]
++        else:
++            positions = self.positions[token_indices_to_sample]
++        hidden_states_for_tree = hidden_states[token_indices_to_sample]
++
++        # Call propose_tree to generate tree draft tokens.
++        draft_token_ids_list = self.propose_tree(
++            batch_size=batch_size,
++            logits=logits,
++            positions=positions,
++            hidden_states=hidden_states_for_tree,
++            common_attn_metadata=common_attn_metadata,
++            slot_mappings=None,
++            aclgraph_runtime_mode=aclgraph_runtime_mode,
++            num_tokens_across_dp=num_tokens_across_dp,
++        )
++        return torch.cat(draft_token_ids_list, dim=1)
++
++    def propose_tree(
++        self,
++        batch_size: int,
++        # [num_tokens, vocab_size]
++        logits: torch.Tensor,
++        # [num_tokens]
++        positions: torch.Tensor,
++        # [num_tokens, hidden_size]
++        hidden_states: torch.Tensor,
++        common_attn_metadata: CommonAttentionMetadata,
++        slot_mappings: dict[str, torch.Tensor]
++        | list[dict[str, torch.Tensor]]
++        | None = None,
++        aclgraph_runtime_mode=CUDAGraphMode.NONE,
++        num_tokens_across_dp: torch.Tensor | None = None,
++    ) -> list[torch.Tensor]:
++        """Tree speculative decoding draft generation on NPU.
++
++        Logic mirrors GPU-side eagle.py propose_tree, but uses NPU-specific APIs:
++        - set_ascend_forward_context instead of set_forward_context
++        - AscendTreeAttentionMetadata for tree attention
++
++        Args:
++            batch_size: batch size
++            logits: [num_tokens, vocab_size] model output logits
++            positions: [num_tokens] token positions
++            hidden_states: [num_tokens, hidden_size] hidden states
++            common_attn_metadata: shared attention metadata
++            slot_mappings: slot mapping dict
++
++        Returns:
++            draft_token_ids_list: per-layer draft token IDs
++        """
++        from dataclasses import replace
++
++        from vllm_ascend.attention.backends.tree_attn import (
++            AscendTreeAttentionMetadataBuilder,
++        )
++
++        tree_attn_metadata_builder = self.draft_attn_groups[0].get_metadata_builder()
++        assert isinstance(
++            tree_attn_metadata_builder, AscendTreeAttentionMetadataBuilder
++        ), (
++            f"Expected AscendTreeAttentionMetadataBuilder, "
++            f"got {type(tree_attn_metadata_builder)}"
++        )
++
++        total_num_drafts = self.cu_drafts_per_level[0]
++        level_num_drafts = total_num_drafts
++
++        # Sample a draft token for each child at the tree root level.
++        num_children = self.child_drafts_per_level[0]
++        if num_children == 1:
++            draft_token_ids = logits.argmax(dim=-1).view(batch_size, -1)
++        else:
++            draft_token_ids = torch.topk(logits, num_children, dim=-1).indices.view(
++                batch_size, -1
++            )
++        draft_token_ids_list = [draft_token_ids]
++        draft_hidden_states = hidden_states.view(batch_size, 1, -1)
++
++        # Initialize empty tensors for concatenation with the level outputs.
++        tree_input_ids = torch.empty(
++            0, device=self.input_ids.device, dtype=self.input_ids.dtype
++        )
++        tree_positions = torch.empty(
++            0, device=self.positions.device, dtype=self.positions.dtype
++        )
++        tree_hidden_states = torch.empty(
++            0, device=self.hidden_states.device, dtype=self.hidden_states.dtype
++        )
++
++        # Precompute the draft token positions.
++        flattened_draft_positions = (
++            positions.view(batch_size, -1) + self.tree_draft_pos_offsets[:batch_size, :]
++        )
++        tree_depth = len(self.cu_drafts_per_level)
++
++        for level in range(tree_depth - 1):
++            # Get draft positions for RoPE.
++            draft_positions = positions + (level + 1)
++            exceeds_max_model_len = (positions + total_num_drafts) >= self.max_model_len
++            # Mask out the position ids that exceed the max model length.
++            # Otherwise, we may get out-of-range error in RoPE.
++            draft_positions = torch.where(
++                exceeds_max_model_len,
++                0,
++                draft_positions,
++            ).view(batch_size, -1)
++
++            if level_num_drafts > 1:
++                # Repeat the positions for each draft at this level.
++                draft_positions = draft_positions.repeat_interleave(
++                    level_num_drafts, dim=1
++                )
++
++            if num_children > 1:
++                # Repeat draft hidden states for each child.
++                draft_hidden_states = draft_hidden_states.repeat_interleave(
++                    num_children, dim=1
++                )
++
++            # Concatenate the draft tokens, positions, and hidden states.
++            tree_input_ids = torch.cat([tree_input_ids, draft_token_ids], dim=1)
++            tree_positions = torch.cat([tree_positions, draft_positions], dim=1)
++            tree_hidden_states = torch.cat(
++                [tree_hidden_states, draft_hidden_states], dim=1
++            )
++
++            # Build new attention metadata for the next level of drafts.
++            # This is necessary to support tree attention.
++            query_len = total_num_drafts
++            common_attn_metadata = replace(
++                common_attn_metadata,
++                query_start_loc=query_len * self.arange[: batch_size + 1],
++                seq_lens=common_attn_metadata.seq_lens + level_num_drafts,
++                num_actual_tokens=batch_size * query_len,
++                max_query_len=query_len,
++            )
++            attn_metadata = tree_attn_metadata_builder.build_for_drafting(
++                common_attn_metadata=common_attn_metadata, draft_index=level + 1
++            )
++
++            # Apply new attention metadata to all draft layers.
++            per_layer_attn_metadata = {}
++            for attn_group in self.draft_attn_groups:
++                for layer_name in attn_group.layer_names:
++                    per_layer_attn_metadata[layer_name] = attn_metadata
++
++            # Consider max model length.
++            attn_metadata.max_seq_len = min(
++                attn_metadata.max_seq_len, self.max_model_len
++            )
++            # For the requests that exceed the max model length, we set the
++            # sequence length to 1 to minimize their overheads in attention.
++            attn_metadata.seq_lens.masked_fill_(exceeds_max_model_len, 1)
++
++            # Compute the slot mapping.
++            block_size = tree_attn_metadata_builder.kv_cache_spec.block_size
++            query_positions = flattened_draft_positions[:, level : level + query_len]
++            block_numbers = query_positions // block_size
++            block_ids = attn_metadata.block_tables.gather(dim=1, index=block_numbers)
++            slot_mapping = block_ids * block_size + query_positions % block_size
++            # Mask out the slot mappings that exceed the max model length.
++            # Otherwise, the KV cache will be inadvertently updated with the
++            # padding tokens.
++            slot_mapping[exceeds_max_model_len] = PADDING_SLOT_ID
++            attn_metadata.slot_mapping = slot_mapping.view(-1)
++
++            # Copy inputs to buffer for cudagraph.
++            num_tokens = attn_metadata.num_actual_tokens
++            input_ids = tree_input_ids.view(-1)
++            self.input_ids[:num_tokens] = input_ids
++            self.positions[:num_tokens] = tree_positions.view(-1)
++            self.hidden_states[:num_tokens] = tree_hidden_states.view(num_tokens, -1)
++
++            # Dispatch ACL Graph per tree level.
++            num_input_tokens = num_tokens
++            if aclgraph_runtime_mode != CUDAGraphMode.NONE:
++                _, level_batch_desc = self.runner.cudagraph_dispatcher.dispatch(
++                    num_tokens=num_input_tokens,
++                    uniform_decode=False,
++                    has_lora=False,
++                )
++                level_num_input_tokens = level_batch_desc.num_tokens
++            else:
++                level_batch_desc = None
++                level_num_input_tokens = num_input_tokens
++
++            # Run the model with ACL Graph support.
++            with set_ascend_forward_context(
++                per_layer_attn_metadata,
++                self.vllm_config,
++                num_tokens=level_num_input_tokens,
++                num_tokens_across_dp=num_tokens_across_dp,
++                aclgraph_runtime_mode=aclgraph_runtime_mode,
++                batch_descriptor=level_batch_desc,
++                is_draft_model=True,
++                slot_mapping={self.attn_layer_names[0]: attn_metadata.slot_mapping},
++            ):
++                forward_context = get_forward_context()
++                if forward_context is not None:
++                    forward_context.moe_layer_index = 0
++
++                last_hidden_states, hidden_states = self.model(
++                    input_ids=self.input_ids[:level_num_input_tokens],
++                    positions=self.positions[:level_num_input_tokens],
++                    hidden_states=self.hidden_states[:level_num_input_tokens],
++                    inputs_embeds=None,
++                )
++
++            # Get the output hidden states for the draft tokens.
++            draft_hidden_states = hidden_states[:num_tokens].view(
++                batch_size, query_len, -1
++            )[:, -level_num_drafts:]
++            draft_last_hidden_states = last_hidden_states[:num_tokens].view(
++                batch_size, query_len, -1
++            )[:, -level_num_drafts:]
++
++            # Get the output logits for the draft tokens.
++            logits = self.model.compute_logits(
++                draft_last_hidden_states.reshape(batch_size * level_num_drafts, -1)
++            )
++
++            # Sample a draft token for each child at the next tree level.
++            num_children = self.child_drafts_per_level[level + 1]
++            if num_children == 1:
++                draft_token_ids = logits.argmax(dim=-1).view(batch_size, -1)
++            else:
++                draft_token_ids = torch.topk(logits, num_children, dim=-1).indices.view(
++                    batch_size, -1
++                )
++            draft_token_ids_list.append(draft_token_ids)
++
++            # Update the # drafts counters for the next tree level.
++            level_num_drafts = self.cu_drafts_per_level[level + 1] - total_num_drafts
++            total_num_drafts = self.cu_drafts_per_level[level + 1]
++
++        return draft_token_ids_list

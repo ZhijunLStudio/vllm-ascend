@@ -1,0 +1,1522 @@
+diff --git a/tests/e2e/singlecard/test_cpu_offload_params.py b/tests/e2e/singlecard/test_cpu_offload_params.py
+new file mode 100644
+index 00000000..f6237526
+--- /dev/null
++++ b/tests/e2e/singlecard/test_cpu_offload_params.py
+@@ -0,0 +1,187 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# This file is a part of the vllm-ascend project.
++#
++"""E2E test for cpu-offload-params with prefetch backend on NPU.
++
++Tests both eager mode and ACL Graph mode.
++"""
++
++import pytest
++from vllm import LLM, SamplingParams
++from vllm.config import OffloadConfig
++
++
++@pytest.fixture
++def prompts():
++    return [
++        "The theory of relativity was proposed by",
++        "Hello, how are you today?",
++        "Explain quantum computing in simple terms.",
++    ]
++
++
++class TestCPUPrefetchOffloadParams:
++    """E2E tests for cpu-offload-params with prefetch backend."""
++
++    @pytest.mark.parametrize(
++        "group_size,num_in_group,prefetch_step",
++        [
++            (4, 1, 1),
++            (8, 2, 1),
++            (4, 1, 2),
++        ],
++    )
++    def test_prefetch_offload_eager(self, prompts, group_size, num_in_group, prefetch_step):
++        """Test basic generation with prefetch offloading in eager mode."""
++        llm = LLM(
++            model="Qwen/Qwen3-0.6B",
++            max_model_len=512,
++            gpu_memory_utilization=0.8,
++            enforce_eager=True,
++            offload_group_size=group_size,
++            offload_num_in_group=num_in_group,
++            offload_prefetch_step=prefetch_step,
++        )
++        sampling_params = SamplingParams(max_tokens=20, temperature=0.0)
++
++        outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
++
++        assert len(outputs) == len(prompts)
++        for output in outputs:
++            assert len(output.outputs) == 1
++            assert len(output.outputs[0].token_ids) > 0
++
++        del llm
++
++    @pytest.mark.parametrize(
++        "group_size,num_in_group,prefetch_step",
++        [
++            (4, 1, 1),
++            (8, 2, 1),
++        ],
++    )
++    def test_prefetch_offload_acl_graph(self, prompts, group_size, num_in_group, prefetch_step):
++        """Test prefetch offloading with ACL Graph enabled (default mode)."""
++        llm = LLM(
++            model="Qwen/Qwen3-0.6B",
++            max_model_len=512,
++            gpu_memory_utilization=0.8,
++            # enforce_eager not set -> ACL Graph (PIECEWISE) enabled by default
++            offload_group_size=group_size,
++            offload_num_in_group=num_in_group,
++            offload_prefetch_step=prefetch_step,
++        )
++        sampling_params = SamplingParams(max_tokens=20, temperature=0.0)
++
++        outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
++
++        assert len(outputs) == len(prompts)
++        for output in outputs:
++            assert len(output.outputs) == 1
++            assert len(output.outputs[0].token_ids) > 0
++
++        del llm
++
++    def test_prefetch_offload_correctness_eager(self, prompts):
++        """Compare output with and without offloading in eager mode."""
++        sampling_params = SamplingParams(max_tokens=20, temperature=0.0)
++
++        # Baseline: no offloading
++        llm_baseline = LLM(
++            model="Qwen/Qwen3-0.6B",
++            max_model_len=512,
++            gpu_memory_utilization=0.8,
++            enforce_eager=True,
++        )
++        outputs_baseline = llm_baseline.generate(prompts, sampling_params, use_tqdm=False)
++        del llm_baseline
++
++        # With prefetch offloading
++        llm_offload = LLM(
++            model="Qwen/Qwen3-0.6B",
++            max_model_len=512,
++            gpu_memory_utilization=0.8,
++            enforce_eager=True,
++            offload_group_size=4,
++            offload_num_in_group=1,
++            offload_prefetch_step=1,
++        )
++        outputs_offload = llm_offload.generate(prompts, sampling_params, use_tqdm=False)
++        del llm_offload
++
++        # Compare outputs: with temperature=0.0, outputs should be identical
++        for i, (base, offload) in enumerate(zip(outputs_baseline, outputs_offload)):
++            base_text = base.outputs[0].text
++            offload_text = offload.outputs[0].text
++            assert base_text == offload_text, (
++                f"Prompt {i}: outputs differ.\n"
++                f"Baseline: {base_text!r}\n"
++                f"Offload:  {offload_text!r}"
++            )
++
++    def test_prefetch_offload_correctness_graph(self, prompts):
++        """Compare output with and without offloading in ACL Graph mode."""
++        sampling_params = SamplingParams(max_tokens=20, temperature=0.0)
++
++        # Baseline: no offloading, ACL Graph enabled
++        llm_baseline = LLM(
++            model="Qwen/Qwen3-0.6B",
++            max_model_len=512,
++            gpu_memory_utilization=0.8,
++        )
++        outputs_baseline = llm_baseline.generate(prompts, sampling_params, use_tqdm=False)
++        del llm_baseline
++
++        # With prefetch offloading, ACL Graph enabled
++        llm_offload = LLM(
++            model="Qwen/Qwen3-0.6B",
++            max_model_len=512,
++            gpu_memory_utilization=0.8,
++            offload_group_size=4,
++            offload_num_in_group=1,
++            offload_prefetch_step=1,
++        )
++        outputs_offload = llm_offload.generate(prompts, sampling_params, use_tqdm=False)
++        del llm_offload
++
++        for i, (base, offload) in enumerate(zip(outputs_baseline, outputs_offload)):
++            base_text = base.outputs[0].text
++            offload_text = offload.outputs[0].text
++            assert base_text == offload_text, (
++                f"Prompt {i}: outputs differ in ACL Graph mode.\n"
++                f"Baseline: {base_text!r}\n"
++                f"Offload:  {offload_text!r}"
++            )
++
++    def test_uva_backend_graceful_fallback(self):
++        """UVA backend should gracefully fall back to NoopOffloader on NPU."""
++        llm = LLM(
++            model="Qwen/Qwen3-0.6B",
++            max_model_len=512,
++            gpu_memory_utilization=0.8,
++            enforce_eager=True,
++            offload_backend="uva",
++            cpu_offload_gb=10,
++        )
++        sampling_params = SamplingParams(max_tokens=10, temperature=0.0)
++
++        # Should still work (falls back to NoopOffloader)
++        outputs = llm.generate("Hello world", sampling_params, use_tqdm=False)
++        assert len(outputs) == 1
++        assert len(outputs[0].outputs[0].token_ids) > 0
++
++        del llm
+diff --git a/tests/ut/offloader/test_npu_prefetch_offloader.py b/tests/ut/offloader/test_npu_prefetch_offloader.py
+new file mode 100644
+index 00000000..c8adb380
+--- /dev/null
++++ b/tests/ut/offloader/test_npu_prefetch_offloader.py
+@@ -0,0 +1,315 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# This file is a part of the vllm-ascend project.
++#
++"""Unit tests for NPUPrefetchOffloader.
++
++Requires NPU hardware for torch.npu.Stream/Event and module placement.
++Run with: VLLM_VERSION=0.19.0 pytest tests/ut/offloader/test_npu_prefetch_offloader.py -v
++"""
++
++import torch
++import torch.nn as nn
++import pytest
++
++from vllm.model_executor.offloader.base import NoopOffloader, create_offloader
++from vllm.model_executor.offloader.prefetch import ParamInfo, StaticBufferPool
++
++from vllm_ascend.offloader.npu_prefetch import NPUPrefetchOffloader, _NPUModuleOffloader
++
++NPU_DEVICE = torch.device("npu:0")
++
++
++class SimpleMLP(nn.Module):
++    """Simple MLP for testing offloader."""
++
++    def __init__(self, hidden_size=64):
++        super().__init__()
++        self.gate_up_proj = nn.Linear(hidden_size, hidden_size * 2, bias=False)
++        self.down_proj = nn.Linear(hidden_size, hidden_size, bias=False)
++
++    def forward(self, x):
++        return self.down_proj(self.gate_up_proj(x))
++
++
++def make_npu_model(num_layers=4, hidden_size=64):
++    """Create a model with layers on NPU device."""
++    layers = nn.ModuleList([SimpleMLP(hidden_size).to(NPU_DEVICE) for _ in range(num_layers)])
++    return layers
++
++
++class TestNPUPrefetchOffloaderInit:
++    """Test NPUPrefetchOffloader initialization."""
++
++    def test_creates_npu_stream(self):
++        """Verify the offloader creates NPU stream, not CUDA stream."""
++        offloader = NPUPrefetchOffloader(
++            group_size=2, num_in_group=1, prefetch_step=1
++        )
++        assert offloader.copy_stream is not None
++        assert offloader.group_size == 2
++        assert offloader.num_in_group == 1
++        assert offloader.prefetch_step == 1
++        assert offloader.module_offloaders == []
++        assert offloader.total_offloaded_bytes == 0
++
++    def test_default_params(self):
++        """Test default parameter values."""
++        offloader = NPUPrefetchOffloader(
++            group_size=4, num_in_group=1, prefetch_step=1
++        )
++        assert offloader.offload_params == set()
++        assert offloader.mode == "cpu"
++
++    def test_offload_params(self):
++        """Test offload_params parameter."""
++        params = {"gate_up_proj", "down_proj"}
++        offloader = NPUPrefetchOffloader(
++            group_size=4, num_in_group=1, prefetch_step=1,
++            offload_params=params
++        )
++        assert offloader.offload_params == params
++
++
++class TestNPUPrefetchOffloaderWrapModules:
++    """Test wrap_modules layer selection logic."""
++
++    def test_layer_selection_group_4_num_1(self):
++        """With group_size=4, num_in_group=1: only layer 3 is offloaded."""
++        layers = make_npu_model(4)
++        offloader = NPUPrefetchOffloader(
++            group_size=4, num_in_group=1, prefetch_step=1
++        )
++        result = offloader.wrap_modules(iter(list(layers)))
++        assert len(offloader.module_offloaders) == 1
++        assert offloader.module_offloaders[0].layer_idx == 0
++
++    def test_layer_selection_group_2_num_1(self):
++        """With group_size=2, num_in_group=1: layers 1, 3 are offloaded."""
++        layers = make_npu_model(4)
++        offloader = NPUPrefetchOffloader(
++            group_size=2, num_in_group=1, prefetch_step=1
++        )
++        result = offloader.wrap_modules(iter(list(layers)))
++        assert len(offloader.module_offloaders) == 2
++
++    def test_layer_selection_group_4_num_2(self):
++        """With group_size=4, num_in_group=2: layers 2, 3 are offloaded."""
++        layers = make_npu_model(4)
++        offloader = NPUPrefetchOffloader(
++            group_size=4, num_in_group=2, prefetch_step=1
++        )
++        result = offloader.wrap_modules(iter(list(layers)))
++        assert len(offloader.module_offloaders) == 2
++
++    def test_offload_params_whitelist(self):
++        """Test selective parameter offloading with whitelist.
++
++        Uses 'gate_up_proj' as filter which matches 'gate_up_proj.weight'
++        but not 'down_proj.weight' (segment matching).
++        """
++        layers = make_npu_model(4)
++        offloader = NPUPrefetchOffloader(
++            group_size=4, num_in_group=1, prefetch_step=1,
++            offload_params={"gate_up_proj"}
++        )
++        result = offloader.wrap_modules(iter(list(layers)))
++
++        assert len(offloader.module_offloaders) == 1
++        module_offloader = offloader.module_offloaders[0]
++        param_names = list(module_offloader._param_offloaders.keys())
++        assert any("gate_up_proj" in name for name in param_names)
++        assert not any("down_proj" in name for name in param_names)
++
++    def test_returns_all_modules(self):
++        """wrap_modules should return all modules, not just offloaded ones."""
++        layers = make_npu_model(4)
++        offloader = NPUPrefetchOffloader(
++            group_size=2, num_in_group=1, prefetch_step=1
++        )
++        result = offloader.wrap_modules(iter(list(layers)))
++        assert len(result) == 4
++
++    def test_wrap_modules_called_twice_raises(self):
++        """Calling wrap_modules twice should raise AssertionError."""
++        layers = make_npu_model(4)
++        offloader = NPUPrefetchOffloader(
++            group_size=4, num_in_group=1, prefetch_step=1
++        )
++        offloader.wrap_modules(iter(list(layers)))
++        with pytest.raises(AssertionError, match="wrap_modules should only be called once"):
++            offloader.wrap_modules(iter(list(layers)))
++
++
++class TestNPUPrefetchOffloaderSyncMethods:
++    """Test sync/join methods."""
++
++    def test_sync_prev_onload_no_modules(self):
++        """sync_prev_onload should not crash when no modules are offloaded."""
++        offloader = NPUPrefetchOffloader(
++            group_size=2, num_in_group=1, prefetch_step=1
++        )
++        offloader.sync_prev_onload()
++
++    def test_join_after_forward_no_modules(self):
++        """join_after_forward should not crash when no modules are offloaded."""
++        offloader = NPUPrefetchOffloader(
++            group_size=2, num_in_group=1, prefetch_step=1
++        )
++        offloader.join_after_forward()
++
++    def test_post_init_no_modules(self):
++        """post_init should not crash when no modules are offloaded."""
++        offloader = NPUPrefetchOffloader(
++            group_size=2, num_in_group=1, prefetch_step=1
++        )
++        offloader.post_init()
++
++
++class TestCreateOffloaderPatch:
++    """Test that the factory patch works correctly."""
++
++    def test_prefetch_returns_npu_offloader(self):
++        """prefetch backend should return NPUPrefetchOffloader."""
++        from vllm.config import OffloadConfig
++        config = OffloadConfig(
++            offload_backend="prefetch",
++            prefetch={"offload_group_size": 4, "offload_num_in_group": 1, "offload_prefetch_step": 1}
++        )
++        offloader = create_offloader(config)
++        assert isinstance(offloader, NPUPrefetchOffloader)
++
++    def test_uva_returns_noop(self):
++        """UVA backend should return NoopOffloader on NPU."""
++        from vllm.config import OffloadConfig
++        config = OffloadConfig(
++            offload_backend="uva",
++            uva={"cpu_offload_gb": 10}
++        )
++        offloader = create_offloader(config)
++        assert isinstance(offloader, NoopOffloader)
++
++    def test_auto_prefetch_returns_npu_offloader(self):
++        """auto backend with offload_group_size > 0 should return NPUPrefetchOffloader."""
++        from vllm.config import OffloadConfig
++        config = OffloadConfig(
++            offload_backend="auto",
++            prefetch={"offload_group_size": 4, "offload_num_in_group": 1, "offload_prefetch_step": 1}
++        )
++        offloader = create_offloader(config)
++        assert isinstance(offloader, NPUPrefetchOffloader)
++
++    def test_auto_uva_returns_noop(self):
++        """auto backend with cpu_offload_gb > 0 should return NoopOffloader on NPU."""
++        from vllm.config import OffloadConfig
++        config = OffloadConfig(
++            offload_backend="auto",
++            uva={"cpu_offload_gb": 10}
++        )
++        offloader = create_offloader(config)
++        assert isinstance(offloader, NoopOffloader)
++
++    def test_empty_returns_noop(self):
++        """Empty config should return NoopOffloader."""
++        from vllm.config import OffloadConfig
++        config = OffloadConfig()
++        offloader = create_offloader(config)
++        assert isinstance(offloader, NoopOffloader)
++
++
++class TestStaticBufferPoolNPU:
++    """Test StaticBufferPool allocation on NPU."""
++
++    def test_allocate_on_npu(self):
++        """Verify buffer pool allocates on NPU device."""
++        param_infos = [
++            ParamInfo(name="weight", shape=(128, 64), stride=(64, 1), dtype=torch.float16),
++            ParamInfo(name="bias", shape=(64,), stride=(1,), dtype=torch.float16),
++        ]
++        pool = StaticBufferPool(
++            param_infos=param_infos,
++            slot_capacity=2,
++            device=NPU_DEVICE,
++        )
++        buf = pool.get_buffer("weight", (128, 64), (64, 1), torch.float16, slot_idx=0)
++        assert buf.device.type == "npu"
++        assert buf.shape == (128, 64)
++        assert buf.dtype == torch.float16
++
++    def test_buffer_slot_reuse(self):
++        """Verify slots are reused circularly."""
++        param_infos = [
++            ParamInfo(name="weight", shape=(32, 32), stride=(32, 1), dtype=torch.float32),
++        ]
++        pool = StaticBufferPool(
++            param_infos=param_infos,
++            slot_capacity=2,
++            device=NPU_DEVICE,
++        )
++        buf0 = pool.get_buffer("weight", (32, 32), (32, 1), torch.float32, slot_idx=0)
++        buf1 = pool.get_buffer("weight", (32, 32), (32, 1), torch.float32, slot_idx=1)
++        buf2 = pool.get_buffer("weight", (32, 32), (32, 1), torch.float32, slot_idx=2)
++        # slot_idx=2 should wrap to slot 0
++        assert buf2.data_ptr() == buf0.data_ptr()
++
++
++class TestNPUModuleOffloader:
++    """Test _NPUModuleOffloader creation."""
++
++    def test_creates_npu_event(self):
++        """Verify _NPUModuleOffloader creates NPU event, not CUDA event."""
++        model = SimpleMLP().to(NPU_DEVICE)
++        copy_stream = torch.npu.Stream()
++        offloader = _NPUModuleOffloader(
++            mode="cpu",
++            module=model,
++            copy_stream=copy_stream,
++            whitelist_param_names=["gate_up_proj.weight", "down_proj.weight"],
++            layer_idx=0,
++        )
++        assert offloader._copy_done_event is not None
++        assert offloader._prefetch_in_capture is False
++        assert offloader._event_valid_for_eager is False
++
++    def test_param_offloaders_created(self):
++        """Verify param offloaders are created for whitelisted params."""
++        model = SimpleMLP().to(NPU_DEVICE)
++        copy_stream = torch.npu.Stream()
++        offloader = _NPUModuleOffloader(
++            mode="cpu",
++            module=model,
++            copy_stream=copy_stream,
++            whitelist_param_names=["gate_up_proj.weight"],
++            layer_idx=0,
++        )
++        assert "gate_up_proj.weight" in offloader._param_offloaders
++        assert "down_proj.weight" not in offloader._param_offloaders
++
++    def test_cpu_param_offloader_creates_cpu_storage(self):
++        """Verify _CpuParamOffloader moves params to CPU."""
++        model = SimpleMLP().to(NPU_DEVICE)
++        copy_stream = torch.npu.Stream()
++        offloader = _NPUModuleOffloader(
++            mode="cpu",
++            module=model,
++            copy_stream=copy_stream,
++            whitelist_param_names=["gate_up_proj.weight"],
++            layer_idx=0,
++        )
++        param_offloader = offloader._param_offloaders["gate_up_proj.weight"]
++        assert param_offloader._cpu_storage is not None
++        assert param_offloader._cpu_storage.device.type == "cpu"
++        assert param_offloader.offloaded_bytes > 0
+diff --git a/vllm_ascend/_310p/model_runner_310p.py b/vllm_ascend/_310p/model_runner_310p.py
+index b63b22ae..6895f1d9 100644
+--- a/vllm_ascend/_310p/model_runner_310p.py
++++ b/vllm_ascend/_310p/model_runner_310p.py
+@@ -474,11 +474,6 @@ class NPUModelRunner310(NPUModelRunner):
+                 self.kernel_block_sizes.append([0])
+ 
+         if block_sizes != [self.cache_config.block_size] or self.kernel_block_sizes != [[self.cache_config.block_size]]:
+-            assert self.offload_config.uva.cpu_offload_gb == 0, (
+-                "Cannot re-initialize the input batch when CPU weight "
+-                "offloading is enabled. See https://github.com/vllm-project/vllm/pull/18298 "  # noqa: E501
+-                "for more details."
+-            )
+             self.input_batch = NPUInputBatch(
+                 max_num_reqs=self.max_num_reqs,
+                 max_model_len=max(self.model_config.max_model_len, self.max_encoder_len),
+diff --git a/vllm_ascend/compilation/acl_graph.py b/vllm_ascend/compilation/acl_graph.py
+index be16dc6e..89d46e08 100644
+--- a/vllm_ascend/compilation/acl_graph.py
++++ b/vllm_ascend/compilation/acl_graph.py
+@@ -17,6 +17,7 @@ from vllm.compilation.monitor import validate_cudagraph_capturing_enabled
+ from vllm.config import CUDAGraphMode, VllmConfig
+ from vllm.forward_context import BatchDescriptor, get_forward_context
+ from vllm.logger import logger
++from vllm.model_executor.offloader import get_offloader
+ from vllm.platforms import current_platform
+ 
+ from vllm_ascend.ascend_forward_context import _EXTRA_CTX
+@@ -136,6 +137,9 @@ class ACLGraphWrapper:
+             entry.input_addresses = input_addresses
+             aclgraph = torch.npu.NPUGraph()
+ 
++            # Sync offloader's copy stream before capture.
++            get_offloader().sync_prev_onload()
++
+             with ExitStack() as stack:
+                 if self.aclgraph_options.gc_disable:
+                     # during every model forward for piecewise aclgraph
+@@ -152,6 +156,11 @@ class ACLGraphWrapper:
+                 with torch.npu.graph(aclgraph, pool=self.graph_pool):
+                     # `output` is managed by pytorch's aclgraph pool
+                     output = self.runnable(*args, **kwargs)
++                    # Join offloader's copy stream after forward to avoid
++                    # unjoined stream error. The last layer's start_prefetch
++                    # forks copy_stream, but wait_prefetch only happens in
++                    # the next forward pass.
++                    get_offloader().join_after_forward()
+                     if self.aclgraph_options.weak_ref_output:
+                         # by converting it to weak ref,
+                         # the original `output` will immediately be released
+@@ -190,6 +199,9 @@ class ACLGraphWrapper:
+             )
+ 
+         logger.info_once("Replaying aclgraph")
++        # Sync offloader before replay - needed when transitioning from
++        # graph capture to replay.
++        get_offloader().sync_prev_onload()
+         # In async scheduling or multi-threaded (MT) scenarios, it is possible that
+         # the CPU's record event (from update_attn_params) for the iteration i completes
+         # before the grph replay of iteration i-1.
+diff --git a/vllm_ascend/offloader/__init__.py b/vllm_ascend/offloader/__init__.py
+new file mode 100644
+index 00000000..10f52773
+--- /dev/null
++++ b/vllm_ascend/offloader/__init__.py
+@@ -0,0 +1,22 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# This file is a part of the vllm-ascend project.
++#
++"""NPU-specific model parameter offloading."""
++
++from vllm_ascend.offloader.npu_prefetch import NPUPrefetchOffloader
++
++__all__ = ["NPUPrefetchOffloader"]
+diff --git a/vllm_ascend/offloader/npu_prefetch.py b/vllm_ascend/offloader/npu_prefetch.py
+new file mode 100644
+index 00000000..18df8aa9
+--- /dev/null
++++ b/vllm_ascend/offloader/npu_prefetch.py
+@@ -0,0 +1,283 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# This file is a part of the vllm-ascend project.
++#
++"""NPU-specific prefetch-based CPU offloading.
++
++This is the NPU port of vllm's PrefetchOffloader, replacing all
++torch.cuda.* calls with torch.npu.* equivalents.
++
++Shared building blocks (ParamInfo, StaticBufferPool, _CpuParamOffloader)
++are imported directly from upstream since they contain no CUDA-specific code.
++"""
++
++import sys
++import traceback
++from collections.abc import Generator
++from os import getpid
++
++import torch
++import torch.nn as nn
++
++from vllm.logger import init_logger
++from vllm.model_executor.offloader.base import BaseOffloader
++from vllm.model_executor.offloader.prefetch import (
++    ParamInfo,
++    StaticBufferPool,
++    _CpuParamOffloader,
++)
++from vllm.utils.platform_utils import is_pin_memory_available
++
++logger = init_logger(__name__)
++
++DBG = False
++
++
++def _dbg(msg):
++    if DBG:
++        print(f"[NPU_OFFLOAD pid={getpid()}] {msg}", file=sys.stderr, flush=True)
++
++
++class NPUPrefetchOffloader(BaseOffloader):
++    """NPU-specific prefetch offloader using torch.npu APIs."""
++
++    def __init__(
++        self,
++        group_size: int,
++        num_in_group: int,
++        prefetch_step: int,
++        offload_params: set[str] | None = None,
++        mode: str = "cpu",
++    ):
++        self.group_size = group_size
++        self.num_in_group = num_in_group
++        self.prefetch_step = prefetch_step
++        self.offload_params = offload_params or set()
++        self.mode = mode
++        self.copy_stream = torch.npu.Stream()
++        self.module_offloaders: list[_NPUModuleOffloader] = []
++        self.buffer_pool: StaticBufferPool | None = None
++        self.total_offloaded_bytes = 0
++        _dbg(f"NPUPrefetchOffloader created: group={group_size}, num={num_in_group}, step={prefetch_step}")
++
++    def wrap_modules(
++        self,
++        modules_generator: Generator[nn.Module, None, None],
++    ) -> list[nn.Module]:
++        assert len(self.module_offloaders) == 0, "wrap_modules should only be called once"
++
++        all_modules = []
++        offload_modules = []
++
++        for module_index, module in enumerate(modules_generator):
++            all_modules.append(module)
++            if module_index % self.group_size >= self.group_size - self.num_in_group:
++                if self.offload_params:
++                    whitelist = [
++                        name for name, _ in module.named_parameters()
++                        if any(f".{p}." in f".{name}." for p in self.offload_params)
++                    ]
++                else:
++                    whitelist = [name for name, _ in module.named_parameters()]
++                if not whitelist:
++                    continue
++                offload_modules.append(module)
++                self.module_offloaders.append(
++                    _NPUModuleOffloader(
++                        mode=self.mode, module=module,
++                        copy_stream=self.copy_stream,
++                        whitelist_param_names=whitelist,
++                        layer_idx=len(self.module_offloaders),
++                    )
++                )
++
++        _dbg(f"wrap_modules: {len(all_modules)} total, {len(offload_modules)} offloaded")
++        for index, module in enumerate(offload_modules):
++            self._hook_module_forward(index, module)
++        return all_modules
++
++    def _hook_module_forward(self, index: int, module: nn.Module):
++        original_forward = module.forward
++        prefetch_step = self.prefetch_step
++        offloaders_len = lambda: len(self.module_offloaders)
++
++        def forward(*args, **kwargs):
++            module.forward = original_forward
++            input_tensor = args[0] if args else kwargs.get("hidden_states")
++            torch.ops.vllm.wait_prefetch(input_tensor, index)
++            output = original_forward(*args, **kwargs)
++            next_index = (index + prefetch_step) % offloaders_len()
++            if isinstance(output, tuple):
++                torch.ops.vllm.start_prefetch(output[0], next_index)
++            else:
++                torch.ops.vllm.start_prefetch(output, next_index)
++            module.forward = forward
++            return output
++
++        module.forward = forward
++
++    def _wait_for_layer(self, layer_idx: int):
++        offloader = self.module_offloaders[layer_idx]
++        if torch.npu.is_current_stream_capturing():
++            if not offloader._prefetch_in_capture:
++                return
++            torch.npu.current_stream().wait_event(offloader._copy_done_event)
++            offloader._prefetch_in_capture = False
++        else:
++            if offloader._event_valid_for_eager:
++                torch.npu.current_stream().wait_event(offloader._copy_done_event)
++            else:
++                torch.npu.current_stream().wait_stream(self.copy_stream)
++
++    def sync_prev_onload(self):
++        torch.npu.current_stream().wait_stream(self.copy_stream)
++
++    def _start_prefetch(self, layer_idx: int):
++        offloader = self.module_offloaders[layer_idx]
++        offloader.start_onload_to_static()
++
++    def join_after_forward(self):
++        if not self.module_offloaders:
++            return
++        for offloader in self.module_offloaders:
++            if offloader._prefetch_in_capture:
++                torch.npu.current_stream().wait_event(offloader._copy_done_event)
++                offloader._prefetch_in_capture = False
++
++    def post_init(self):
++        _dbg(f"post_init ENTER: {len(self.module_offloaders)} offloaders")
++        try:
++            for offloader in self.module_offloaders:
++                offloader.sync_cpu_storage()
++
++            param_infos: list[ParamInfo] = []
++            device: torch.device | None = None
++            for offloader in self.module_offloaders:
++                param_infos.extend(offloader.get_param_infos())
++                if device is None:
++                    device = offloader.device
++
++            if device is None:
++                _dbg("post_init: no device, returning")
++                return
++
++            _dbg(f"post_init: allocating buffer pool on {device}, {len(param_infos)} params")
++            self.buffer_pool = StaticBufferPool(
++                param_infos=param_infos,
++                slot_capacity=self.prefetch_step,
++                device=device,
++            )
++
++            for idx, offloader in enumerate(self.module_offloaders):
++                slot_idx = idx % self.prefetch_step
++                offloader.assign_buffer_slot(self.buffer_pool, slot_idx)
++                for name, po in offloader._param_offloaders.items():
++                    _dbg(f"  param {name}: device={po._param.data.device}")
++
++            for offloader in self.module_offloaders:
++                offloader.post_init()
++                self.total_offloaded_bytes += offloader.offloaded_bytes
++
++            _dbg(f"post_init done: {self.total_offloaded_bytes / 1e9:.4f} GB offloaded, "
++                 f"{self.buffer_pool.total_bytes / 1e9:.4f} GB buffer pool")
++
++            for i in range(min(self.prefetch_step, len(self.module_offloaders))):
++                self.module_offloaders[i].start_onload_to_static()
++        except Exception as e:
++            _dbg(f"post_init EXCEPTION: {e}")
++            traceback.print_exc(file=sys.stderr)
++            raise
++
++
++class _NPUModuleOffloader:
++
++    def __init__(self, mode, module, copy_stream, whitelist_param_names, layer_idx):
++        self.mode = mode
++        self.module = module
++        self.device = next(module.parameters()).device
++        self.copy_stream = copy_stream
++        self.layer_idx = layer_idx
++        self.offloaded_bytes = 0
++        self._copy_done_event = torch.npu.Event()
++        self._event_valid_for_eager = False
++        self._prefetch_in_capture = False
++        self._buffer_pool: StaticBufferPool | None = None
++        self._buffer_slot_idx: int = 0
++
++        assert self.device != torch.device("cpu"), "Module parameters should be on NPU"
++
++        param_dict = dict(self.module.named_parameters())
++        assert all(name in param_dict for name in whitelist_param_names), (
++            f"Whitelist params {whitelist_param_names} not found in module params"
++        )
++        self._param_offloaders = {
++            name: _CpuParamOffloader(module=module, param_name=name)
++            for name in whitelist_param_names
++        }
++
++    def post_init(self):
++        for param_offloader in self._param_offloaders.values():
++            param_offloader.post_init()
++            self.offloaded_bytes += param_offloader.offloaded_bytes
++
++    def sync_cpu_storage(self):
++        for param_offloader in self._param_offloaders.values():
++            param_offloader.sync_cpu_storage()
++        deleted = [name for name, o in self._param_offloaders.items()
++                   if getattr(o, "_param_deleted", False)]
++        if deleted:
++            for name in deleted:
++                del self._param_offloaders[name]
++
++    def get_param_infos(self) -> list[ParamInfo]:
++        infos = []
++        for name, offloader in self._param_offloaders.items():
++            cpu_storage = offloader._cpu_storage
++            assert cpu_storage is not None
++            infos.append(ParamInfo(
++                name=name, shape=tuple(cpu_storage.shape),
++                stride=tuple(cpu_storage.stride()), dtype=cpu_storage.dtype,
++            ))
++        return infos
++
++    def assign_buffer_slot(self, pool: StaticBufferPool, slot_idx: int):
++        self._buffer_pool = pool
++        self._buffer_slot_idx = slot_idx
++        for name, offloader in self._param_offloaders.items():
++            cpu_storage = offloader._cpu_storage
++            assert cpu_storage is not None
++            buffer = pool.get_buffer(
++                name=name, shape=tuple(cpu_storage.shape),
++                stride=tuple(cpu_storage.stride()), dtype=cpu_storage.dtype,
++                slot_idx=slot_idx,
++            )
++            offloader.assign_static_buffer(buffer)
++
++    def start_onload_to_static(self):
++        assert self._buffer_pool is not None
++        self._prefetch_in_capture = torch.npu.is_current_stream_capturing()
++        fork_event = torch.npu.Event()
++        torch.npu.current_stream().record_event(fork_event)
++        self.copy_stream.wait_event(fork_event)
++        with torch.npu.stream(self.copy_stream):
++            for name, offloader in self._param_offloaders.items():
++                cpu_storage = offloader._cpu_storage
++                gpu_buffer = offloader._gpu_buffer
++                assert cpu_storage is not None
++                assert gpu_buffer is not None
++                gpu_buffer.copy_(cpu_storage, non_blocking=True)
++        self._copy_done_event.record(self.copy_stream)
++        self._event_valid_for_eager = not torch.npu.is_current_stream_capturing()
+diff --git a/vllm_ascend/patch/worker/__init__.py b/vllm_ascend/patch/worker/__init__.py
+index 885e52e0..e475987d 100644
+--- a/vllm_ascend/patch/worker/__init__.py
++++ b/vllm_ascend/patch/worker/__init__.py
+@@ -17,7 +17,7 @@
+ 
+ from vllm.triton_utils import HAS_TRITON
+ 
+-from vllm_ascend.utils import is_310p
++from vllm_ascend.utils import is_310p, vllm_version_is
+ 
+ if HAS_TRITON:
+     import vllm_ascend.patch.worker.patch_triton
+@@ -34,13 +34,17 @@ import vllm_ascend.patch.worker.patch_minimax_m2  # noqa
+ import vllm_ascend.patch.worker.patch_minimax_m2_linear_attn  # noqa
+ import vllm_ascend.patch.worker.patch_mamba_utils  # noqa
+ import vllm_ascend.patch.worker.patch_multimodal_merge  # noqa
+-import vllm_ascend.patch.worker.patch_gdn_attn  # noqa
+ import vllm_ascend.patch.worker.patch_qwen3_next_mtp  # noqa
+ 
+ if not is_310p():
+     import vllm_ascend.patch.worker.patch_qwen3_5  # noqa
++    import vllm_ascend.patch.worker.patch_gdn_attn  # noqa
++
++    if not vllm_version_is("0.19.0"):
++        import vllm_ascend.patch.worker.patch_qwen3_dflash  # noqa
+ import vllm_ascend.patch.worker.patch_rejection_sampler  # noqa
+ import vllm_ascend.patch.worker.patch_v2.patch_uva  # noqa
++import vllm_ascend.patch.worker.patch_offloader  # noqa
+ import vllm_ascend.patch.worker.patch_huanyuan_vl  # noqa
+ import vllm_ascend.patch.worker.patch_routed_experts_capturer  # noqa
+ import vllm_ascend.patch.worker.patch_npugraph_ex_triton  # noqa
+@@ -53,3 +57,4 @@ import vllm_ascend.patch.worker.patch_v2.patch_model_state  # noqa
+ import vllm_ascend.patch.worker.patch_v2.patch_block_table  # noqa
+ import vllm_ascend.patch.worker.patch_qwen3_c8  # noqa
+ import vllm_ascend.patch.worker.patch_qwen3vl  # noqa
++import vllm_ascend.patch.worker.patch_v2.patch_attn_utils  # noqa
+diff --git a/vllm_ascend/patch/worker/patch_offloader.py b/vllm_ascend/patch/worker/patch_offloader.py
+new file mode 100644
+index 00000000..c0dfe8ba
+--- /dev/null
++++ b/vllm_ascend/patch/worker/patch_offloader.py
+@@ -0,0 +1,89 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# This file is a part of the vllm-ascend project.
++#
++"""Patch create_offloader to return NPU-specific offloaders.
++
++On NPU:
++- prefetch backend -> NPUPrefetchOffloader
++- uva backend -> NoopOffloader (UVA not supported on NPU)
++- auto + offload_group_size > 0 -> NPUPrefetchOffloader
++- auto + cpu_offload_gb > 0 -> NoopOffloader (UVA not supported)
++
++Patches at multiple levels to ensure the patched function is used:
++1. offloader_base.create_offloader (module definition)
++2. offloader_pkg.create_offloader (package re-export)
++3. gpu_model_runner.create_offloader (captured via from-import)
++"""
++
++import vllm.model_executor.offloader as offloader_pkg
++import vllm.model_executor.offloader.base as offloader_base
++from vllm.logger import init_logger
++from vllm.model_executor.offloader.base import NoopOffloader
++
++from vllm_ascend.offloader.npu_prefetch import NPUPrefetchOffloader
++
++logger = init_logger(__name__)
++
++
++def _npu_create_offloader(offload_config):
++    backend = offload_config.offload_backend
++    uva = offload_config.uva
++    prefetch = offload_config.prefetch
++
++    if backend == "auto":
++        if prefetch.offload_group_size > 0:
++            backend = "prefetch"
++        elif uva.cpu_offload_gb > 0:
++            logger.warning(
++                "UVA offloading is not supported on NPU. "
++                "Use prefetch backend instead (--offload-backend prefetch "
++                "--prefetch.offload-group-size N). Falling back to NoopOffloader."
++            )
++            return NoopOffloader()
++        else:
++            return NoopOffloader()
++
++    if backend == "prefetch":
++        return NPUPrefetchOffloader(
++            group_size=prefetch.offload_group_size,
++            num_in_group=prefetch.offload_num_in_group,
++            prefetch_step=prefetch.offload_prefetch_step,
++            offload_params=prefetch.offload_params,
++            mode="cpu",
++        )
++    elif backend == "uva":
++        logger.warning(
++            "UVA offloading is not supported on NPU. "
++            "Use prefetch backend instead (--offload-backend prefetch "
++            "--prefetch.offload-group-size N). Falling back to NoopOffloader."
++        )
++        return NoopOffloader()
++    else:
++        return NoopOffloader()
++
++
++# Patch at all levels to cover from-imports that capture the reference
++offloader_base.create_offloader = _npu_create_offloader
++offloader_pkg.create_offloader = _npu_create_offloader
++
++# Patch gpu_model_runner module if already imported (captures from-import)
++try:
++    import vllm.v1.worker.gpu_model_runner as gpu_mr_module
++
++    gpu_mr_module.create_offloader = _npu_create_offloader
++except (ImportError, AttributeError):
++    pass
+diff --git a/vllm_ascend/platform.py b/vllm_ascend/platform.py
+index a3fb14f1..2634e8cd 100644
+--- a/vllm_ascend/platform.py
++++ b/vllm_ascend/platform.py
+@@ -233,6 +233,17 @@ class NPUPlatform(Platform):
+     def set_device(cls, device: torch.device):
+         torch.npu.set_device(device)
+ 
++    @classmethod
++    def _validate_layer_sharding_config(cls, vllm_config: VllmConfig) -> None:
++        additional_config = vllm_config.additional_config or {}
++        layer_sharding = additional_config.get("layer_sharding") or []
++        if not layer_sharding:
++            return
++
++        kv_transfer_config = vllm_config.kv_transfer_config
++        if kv_transfer_config is not None and kv_transfer_config.kv_role != "kv_producer":
++            raise ValueError("additional_config.layer_sharding can only be enabled in PD-disaggregated's P node.")
++
+     @classmethod
+     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
+         from vllm_ascend.quantization.utils import maybe_auto_detect_quantization
+@@ -240,6 +251,8 @@ class NPUPlatform(Platform):
+         if vllm_config.model_config is not None:
+             maybe_auto_detect_quantization(vllm_config)
+ 
++        cls._validate_layer_sharding_config(vllm_config)
++
+         # initialize ascend config from vllm additional_config
+         cls._fix_incompatible_config(vllm_config)
+ 
+@@ -446,6 +459,13 @@ class NPUPlatform(Platform):
+             vllm_config.scheduler_config.enable_chunked_prefill = True
+             vllm_config.scheduler_config.SLO_limits_for_dynamic_batch = ascend_config.SLO_limits_for_dynamic_batch
+ 
++        # Use ProfilingChunkScheduler when profiling-based chunk sizing is on.
++        if ascend_config.profiling_chunk_config.enabled:
++            vllm_config.scheduler_config.scheduler_cls = (
++                "vllm_ascend.core.scheduler_profiling_chunk.ProfilingChunkScheduler"
++            )
++            import vllm_ascend.patch.platform.patch_profiling_chunk  # noqa
++
+         cp_size = parallel_config.decode_context_parallel_size * parallel_config.prefill_context_parallel_size
+         if (
+             vllm_config.kv_transfer_config is not None
+@@ -571,6 +591,12 @@ class NPUPlatform(Platform):
+     def is_pin_memory_available(cls):
+         return True
+ 
++    @classmethod
++    def is_uva_available(cls) -> bool:
++        # NPU does not support UVA (Unified Virtual Addressing),
++        # which is a CUDA-specific feature for zero-copy CPU memory access.
++        return False
++
+     @classmethod
+     def opaque_attention_op(cls) -> bool:
+         return True
+@@ -609,7 +635,6 @@ class NPUPlatform(Platform):
+             vllm_config (VllmConfig): configuration of vllm.
+             dp_metadata (Dpmetadata): metadata for data parallelism.
+                 lack of typehint because of circular import.
+-            virtual_engine (int, optional): index of virtual engine. Defaults to 0.
+             num_tokens (int | None, optional): number of tokens. Defaults to None.
+             num_tokens_across_dp (torch.Tensor | None, optional): number of tokens
+                 across data parallelism.Defaults to None.
+@@ -624,7 +649,11 @@ class NPUPlatform(Platform):
+             dict[str, Any]: _description_
+         """
+         # NOTE(Ronald1995): avoid circular import.
+-        from vllm_ascend.ascend_forward_context import get_mc2_mask, select_moe_comm_method
++        from vllm_ascend.ascend_forward_context import (
++            get_mc2_mask,
++            get_mrv2_in_profile_run,
++            select_moe_comm_method,
++        )
+         from vllm_ascend.ops.fused_moe.moe_comm_method import get_moe_comm_method
+         from vllm.distributed import get_dp_group, get_tensor_model_parallel_world_size
+ 
+@@ -640,14 +669,14 @@ class NPUPlatform(Platform):
+         # when v1's forward context is refactored, we can remove this branch.
+         # Currently, model runner v2 use the new forward context.
+         # compared to v1, v2's forward context lacks some fields, such as:
+-        # in_profile_run, is_first_layer, prefetch_mlp_gate_up_proj,
+-        # prefetch_mlp_gate_down_proj, prefetch_mlp_enabled, model_instance,
+-        # is_draft_model.
++        # is_first_layer, prefetch_mlp_gate_up_proj, prefetch_mlp_gate_down_proj,
++        # prefetch_mlp_enabled, model_instance, is_draft_model.
+         if not envs_vllm.VLLM_USE_V2_MODEL_RUNNER:
+             return {}
+ 
+         # is_draft_model will be removed later, so we set it to False temporarily.
+         is_draft_model = False
++        in_profile_run = get_mrv2_in_profile_run()
+         moe_comm_type = select_moe_comm_method(
+             num_tokens,
+             vllm_config,
+@@ -694,6 +723,7 @@ class NPUPlatform(Platform):
+         else:
+             max_tokens_across_dp = num_tokens
+         mc2_mask = None
++        padded_num_tokens = None
+         if num_tokens is not None:
+             num_actual_tokens = num_tokens
+             # NOTE: token num which need to pad to when mc2
+@@ -716,6 +746,8 @@ class NPUPlatform(Platform):
+             "max_tokens_across_dp": max_tokens_across_dp,
+             "mc2_mask": mc2_mask,
+             "is_draft_model": is_draft_model,
++            "in_profile_run": in_profile_run,
++            "padded_num_tokens": padded_num_tokens,
+         }
+ 
+     @staticmethod
+@@ -866,3 +898,7 @@ class NPUPlatform(Platform):
+     @classmethod
+     def use_custom_op_collectives(cls) -> bool:
+         return True
++
++    @classmethod
++    def manual_seed_all(cls, seed: int) -> None:
++        pass
+diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
+index ddde07b0..fd06b64d 100644
+--- a/vllm_ascend/worker/model_runner_v1.py
++++ b/vllm_ascend/worker/model_runner_v1.py
+@@ -19,6 +19,7 @@
+ 
+ import math
+ import sys
++import time
+ from collections import defaultdict
+ from contextlib import contextmanager, nullcontext
+ from copy import copy, deepcopy
+@@ -113,6 +114,7 @@ from vllm_ascend.patch.worker.patch_module import patch_torch_npu_argsort
+ from vllm_ascend.quantization.utils import enable_fa_quant
+ from vllm_ascend.sample.sampler import AscendSampler
+ from vllm_ascend.spec_decode import get_spec_decode_method
++from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
+ from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
+ from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
+ from vllm_ascend.spec_decode.medusa_proposer import AscendMedusaProposer
+@@ -400,6 +402,9 @@ class NPUModelRunner(GPUModelRunner):
+                 self.is_pooling_model,
+                 self.vllm_config.model_config.logits_processors,
+             ),
++            logitsprocs_need_output_token_ids=bool(
++                self.vllm_config.model_config.logits_processors
++            ),
+             is_pooling_model=self.is_pooling_model,
+             num_speculative_tokens=(
+                 self.vllm_config.speculative_config.num_speculative_tokens if self.vllm_config.speculative_config else 0
+@@ -451,6 +456,7 @@ class NPUModelRunner(GPUModelRunner):
+             AscendNgramProposer
+             | AscendEagleProposer
+             | AscendDraftModelProposer
++            | AscendDflashProposer
+             | AscendSuffixDecodingProposer
+             | AscendMedusaProposer
+             | None
+@@ -970,14 +976,6 @@ class NPUModelRunner(GPUModelRunner):
+     def _build_attn_state(self, num_reqs, num_scheduled_tokens, num_valid_tokens):
+         if np.all(self.input_batch.num_computed_tokens_cpu[:num_reqs] == 0):
+             attn_state = AscendAttentionState.PrefillNoCache
+-            # If all prompts are shorter than or equal to decode threshold, they should
+-            # be treated as SpecDecoding for correct forward path in mla attention backend
+-            if (
+-                self.speculative_config
+-                and self.speculative_config.method == "mtp"
+-                and np.all(num_scheduled_tokens <= self.decode_threshold)
+-            ):
+-                attn_state = AscendAttentionState.SpecDecoding
+         # We assume it is the decode stage, where prefill occurs but only one token is not hit in cache.
+         elif np.all(num_scheduled_tokens == 1):
+             attn_state = AscendAttentionState.DecodeOnly
+@@ -1244,6 +1242,10 @@ class NPUModelRunner(GPUModelRunner):
+                 capturer.clear_buffer()
+             else:
+                 logger.warning("RoutedExpertsCapturer is not initialized.")
++
++        if self.ascend_config.profiling_chunk_config.enabled:
++            self._sync_device()
++            self._execution_start_time = time.perf_counter()
+         if self.execute_model_state is not None:
+             raise RuntimeError("State error: sample_tokens() must be called after execute_model() returns None.")
+         # self._draft_token_ids is None when `input_fits_in_drafter=False`
+@@ -1405,10 +1407,22 @@ class NPUModelRunner(GPUModelRunner):
+                     num_reqs_padded = self._pad_query_start_loc_for_fia(
+                         num_tokens_padded, num_reqs_padded, num_reqs, cudagraph_mode, batch_desc.num_reqs
+                     )
+-                    if enable_sp() and num_tokens_padded == num_tokens_unpadded:
+-                        if num_reqs_padded > old_num_reqs_padded:
++                    
++                    
++                    # FIA may add a virtual request in Mixed Batch scenarios.
++                    # here we revert the request added by _pad_query_start_loc_for_fia if SP is enabled.
++                    # RELAXED CONDITION: Check if num_reqs_padded was actually increased, rather than
++                    # strictly checking token equality. This handles cases where num_tokens_padded
++                    # != num_tokens_unpadded due to SP alignment (e.g., 29292 vs 29290).
++                    if enable_sp() and num_reqs_padded > old_num_reqs_padded:
++                        if num_tokens_padded == num_tokens_unpadded:
++                            num_reqs_padded = old_num_reqs_padded
++                            self.query_start_loc.np[num_reqs_padded + 1] = 0
++                        if num_tokens_padded != num_tokens_unpadded and not self.speculative_config:
+                             num_reqs_padded = old_num_reqs_padded
+                             self.query_start_loc.np[num_reqs_padded + 1] = 0
++                            self.query_start_loc.np[num_reqs_padded] = num_tokens_padded
++                            self.query_start_loc.gpu[num_reqs_padded] = num_tokens_padded
+ 
+                 (attn_metadata, spec_decode_common_attn_metadata) = self._build_attention_metadata(
+                     num_tokens=num_tokens_unpadded
+@@ -1720,6 +1734,9 @@ class NPUModelRunner(GPUModelRunner):
+             ec_connector_output=ec_connector_output if self.supports_mm_inputs else None,
+             cudagraph_stats=cudagraph_stats,
+         )
++        if self.ascend_config.profiling_chunk_config.enabled and hasattr(self, '_execution_start_time'):
++            self._sync_device()
++            model_runner_output.execution_time_ms = (time.perf_counter() - self._execution_start_time) * 1000.0
+ 
+         if self.dynamic_eplb:
+             with record_function_or_nullcontext("EPLB update"):
+@@ -1748,7 +1765,7 @@ class NPUModelRunner(GPUModelRunner):
+ 
+         if not self.use_async_scheduling:
+             return model_runner_output
+-        return AsyncGPUModelRunnerOutput(
++        async_output = AsyncGPUModelRunnerOutput(
+             model_runner_output=model_runner_output,
+             sampled_token_ids=sampler_output.sampled_token_ids,
+             logprobs_tensors=sampler_output.logprobs_tensors,
+@@ -1756,11 +1773,17 @@ class NPUModelRunner(GPUModelRunner):
+             async_output_copy_stream=self.async_output_copy_stream,
+             vocab_size=self.input_batch.vocab_size,
+         )
++        self.input_batch.set_async_sampled_token_ids(
++            async_output.sampled_token_ids_cpu,
++            async_output.async_copy_ready_event,
++        )
++        return async_output
+ 
+     # overwrite _sample for lmhead_tp_enable and need_accepted_tokens
+     def _sample(self, logits, spec_decode_metadata):
+         # Sample the next token and get logprobs if needed.
+         sampling_metadata = self.input_batch.sampling_metadata
++        self.input_batch.update_async_output_token_ids()
+         if spec_decode_metadata is None:
+             if lmhead_tp_enable() and logits is not None:
+                 logits = logits[: self.input_batch.num_reqs]
+@@ -1971,6 +1994,36 @@ class NPUModelRunner(GPUModelRunner):
+             return round_up(num_scheduled_tokens, tp_size)
+         return num_scheduled_tokens
+ 
++    # This is a function from the upstream vllm used to handle PP+SP. Since the judgment logic 
++    # of flashcomm1 in Ascend is inconsistent with SP in vllm, it needs to be overridden.
++    def sync_and_slice_intermediate_tensors(
++        self,
++        num_tokens: int,
++        intermediate_tensors: IntermediateTensors | None,
++        sync_self: bool,
++    ) -> IntermediateTensors:
++        assert self.intermediate_tensors is not None
++        tp = self.vllm_config.parallel_config.tensor_parallel_size
++
++        # When sequence parallelism is enabled, the "residual" tensor is sharded
++        # across tensor parallel ranks, so each rank only needs its own slice.
++        if sync_self:
++            assert intermediate_tensors is not None
++            for k, v in intermediate_tensors.items():
++                copy_len = (num_tokens + tp - 1) // tp if enable_sp() else num_tokens
++                self.intermediate_tensors[k][:copy_len].copy_(
++                    v[:copy_len], non_blocking=True
++                )
++
++        return IntermediateTensors(
++            {
++                k: v[: (num_tokens + tp - 1) // tp]
++                if enable_sp()
++                else v[:num_tokens]
++                for k, v in self.intermediate_tensors.items()
++            }
++        )
++
+     def _sync_batch_across_dp(
+         self,
+         num_tokens_padded: int | None = None,
+@@ -2342,7 +2395,7 @@ class NPUModelRunner(GPUModelRunner):
+             if kv_cache_gid > 0:
+                 cm.block_table_tensor, cm.slot_mapping = _get_block_table_and_slot_mapping(kv_cache_gid)
+             if self.speculative_config and spec_decode_common_attn_metadata is None:
+-                if isinstance(self.drafter, AscendEagleProposer | AscendDraftModelProposer):
++                if isinstance(self.drafter, AscendEagleProposer | AscendDraftModelProposer | AscendDflashProposer):
+                     if self.drafter.attn_layer_names[0] in kv_cache_group.layer_names:
+                         spec_decode_common_attn_metadata = cm
+                 else:
+@@ -2409,6 +2462,7 @@ class NPUModelRunner(GPUModelRunner):
+         is_graph_capturing: bool = False,
+         num_active_loras: int = 0,
+         profile_seq_lens: int | None = None,
++        profile_cpp: bool = False,
+     ) -> tuple[torch.Tensor, torch.Tensor]:
+         # only support eager mode and piecewise graph now
+         assert cudagraph_runtime_mode is None or cudagraph_runtime_mode.valid_runtime_modes()
+@@ -2434,11 +2488,13 @@ class NPUModelRunner(GPUModelRunner):
+         if create_mixed_batch:
+             raise NotImplementedError("create_mixed_batch is used for warmup deepgemm, vllm-ascend does not need it")
+         elif uniform_decode:
+-            assert not create_mixed_batch
+             num_reqs = min(max_num_reqs, cdiv(num_tokens, max_query_len))
+             num_scheduled_tokens_list = [max_query_len] * num_reqs
+             if num_tokens % max_query_len != 0:
+                 num_scheduled_tokens_list[-1] = num_tokens % max_query_len
++        elif profile_cpp:
++            num_reqs = 1
++            num_scheduled_tokens_list = [num_tokens] * num_reqs
+         else:
+             num_reqs = min(num_tokens, max_num_reqs)
+             min_tokens_per_req = num_tokens // num_reqs
+@@ -2461,7 +2517,7 @@ class NPUModelRunner(GPUModelRunner):
+             max_num_scheduled_tokens=max_query_len,
+             use_cascade_attn=False,
+             allow_microbatching=allow_microbatching,
+-            force_eager=is_profile or (cudagraph_runtime_mode == CUDAGraphMode.NONE),
++            force_eager=is_profile or (cudagraph_runtime_mode == CUDAGraphMode.NONE) or profile_cpp,
+             # `force_uniform_decode` is used for cudagraph capture; because for
+             # capturing mixed prefill-decode batches, we sometimes use
+             # num_tokens == num_reqs which looks like a uniform decode batch to the
+@@ -2532,9 +2588,11 @@ class NPUModelRunner(GPUModelRunner):
+             num_scheduled_tokens, self.query_pos.np)
+             self.query_start_loc.np[1 : num_reqs_padded + 1] = cum_num_tokens
+             self.query_start_loc.copy_to_gpu()
+-            num_reqs_padded = self._pad_query_start_loc_for_fia(
+-                num_tokens_padded, num_reqs_padded, num_reqs, cudagraph_runtime_mode, batch_desc.num_reqs
+-            )
++
++            if not profile_cpp:
++                num_reqs_padded = self._pad_query_start_loc_for_fia(
++                    num_tokens_padded, num_reqs_padded, num_reqs, cudagraph_runtime_mode, batch_desc.num_reqs
++                )
+ 
+             pad_attn = cudagraph_runtime_mode == CUDAGraphMode.FULL
+             attn_metadata, _ = self._build_attention_metadata(
+@@ -2723,7 +2781,9 @@ class NPUModelRunner(GPUModelRunner):
+                             "Model does not support EAGLE3 interface but "
+                             "aux_hidden_state_outputs was requested"
+                         )
+-                    aux_layers = self.model.get_eagle3_default_aux_hidden_state_layers()
++                    aux_layers = self._get_eagle3_aux_layers_from_config()
++                    if not aux_layers:
++                        aux_layers = self.model.get_eagle3_default_aux_hidden_state_layers()
+                     self.model.set_aux_hidden_state_layers(aux_layers)
+ 
+             if self.lora_config:
+@@ -2736,6 +2796,9 @@ class NPUModelRunner(GPUModelRunner):
+             self.update_stream: torch.npu.Stream = torch.npu.Stream()
+             self.model = ACLGraphWrapper(self.model, self.vllm_config, runtime_mode=CUDAGraphMode.FULL)
+ 
++        from vllm.model_executor.offloader import get_offloader
++        get_offloader().post_init()
++
+     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
+         """
+         Initialize KV cache based on `kv_cache_config`.
+@@ -2763,7 +2826,7 @@ class NPUModelRunner(GPUModelRunner):
+         if self.speculative_config and (
+             self.speculative_config.use_eagle() or self.speculative_config.uses_draft_model()
+         ):
+-            assert isinstance(self.drafter, AscendEagleProposer | AscendDraftModelProposer)
++            assert isinstance(self.drafter, AscendEagleProposer | AscendDflashProposer | AscendDraftModelProposer)
+             block_size = (self.kernel_block_sizes[0] if isinstance(
+             self.kernel_block_sizes, list) else self.kernel_block_sizes)
+             self.drafter.initialize_attn_backend(kv_cache_config, block_size)
+@@ -3244,11 +3307,6 @@ class NPUModelRunner(GPUModelRunner):
+             max_num_blocks.append(max_num_blocks_per_req)
+ 
+         if block_sizes != [self.cache_config.block_size] or self.kernel_block_sizes != [[self.cache_config.block_size]]:
+-            assert self.offload_config.uva.cpu_offload_gb == 0, (
+-                "Cannot re-initialize the input batch when CPU weight "
+-                "offloading is enabled. See https://github.com/vllm-project/vllm/pull/18298 "  # noqa: E501
+-                "for more details."
+-            )
+             self.input_batch = NPUInputBatch(
+                 max_num_reqs=self.max_num_reqs,
+                 max_model_len=max_model_len,
+@@ -3418,7 +3476,6 @@ class NPUModelRunner(GPUModelRunner):
+                         cache_sparse_c8=self.ascend_config.is_sparse_c8_layer(layer_name),
+                     )
+                 elif spec := attn_module.get_kv_cache_spec(self.vllm_config):
+-                    assert isinstance(spec, MLAAttentionSpec)
+                     from vllm.v1.kv_cache_interface import MLAAttentionSpec as AscendMLAAttentionSpec
+                     if getattr(attn_module.impl, "fa_quant_layer", False):
+                         head_size = attn_module.head_size + attn_module.qk_rope_head_dim
+@@ -3457,12 +3514,20 @@ class NPUModelRunner(GPUModelRunner):
+         with update_pass_config(self):
+             super()._check_and_update_cudagraph_mode(attention_backends, kv_cache_groups)
+ 
++
++        capture_descs = self.cudagraph_dispatcher.get_capture_descs()
++        capture_sizes = sorted({
++            desc.num_tokens
++            for _, descs in capture_descs
++            for desc in descs
++        })
++
+         # NOTE: Since aclgraph_batch_sizes cannot be determined until here,
+         # we set the graph params right before initializing the keys.
+         if self.use_aclgraph:
+-            set_graph_params(self.cudagraph_batch_sizes)
++            set_graph_params(capture_sizes)
+             if self.speculative_config:
+-                set_draft_graph_params(self.cudagraph_batch_sizes)
++                set_draft_graph_params(capture_sizes)
+ 
+     def capture_model(self) -> None:
+         gpu_model_runner_cls = next((cls for cls in self.__class__.__mro__ if cls.__name__ == "GPUModelRunner"), None)
+diff --git a/vllm_ascend/worker/worker.py b/vllm_ascend/worker/worker.py
+index 50af9526..ce5a7ded 100644
+--- a/vllm_ascend/worker/worker.py
++++ b/vllm_ascend/worker/worker.py
+@@ -60,6 +60,11 @@ from vllm_ascend.utils import (
+     get_ascend_device_type,
+     register_ascend_customop,
+ )
++
++# Patch create_offloader BEFORE model_runner_v1 imports gpu_model_runner
++# (which captures create_offloader via from-import at module level)
++import vllm_ascend.patch.worker.patch_offloader  # noqa: F401
++
+ from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
+ 
+ torch._dynamo.trace_rules.clear_lru_cache()  # noqa: E402
+@@ -483,6 +488,68 @@ class NPUWorker(WorkerBase):
+     def get_model(self) -> nn.Module:
+         return self.model_runner.get_model()
+ 
++    @torch.inference_mode()
++    def profile_prefill_latency(self, num_tokens: int) -> float:
++        """
++        Profile prefill latency for a given number of tokens.
++
++        This runs a real model forward pass and measures the execution time.
++        Used for profiling-based dynamic chunk sizing.
++
++        In PP (Pipeline Parallelism) mode:
++        - All workers execute the forward pass to stay synchronized
++        - Only the timing from PP0 (first rank) is meaningful for scheduling
++        - PP0 includes all the pipeline stages' latency when using async scheduling
++
++        Args:
++            num_tokens: Number of tokens to profile
++
++        Returns:
++            Latency in milliseconds
++        """
++        import time
++
++        # Clamp to valid range
++        num_tokens = min(num_tokens, self.scheduler_config.max_num_batched_tokens)
++        num_tokens = max(num_tokens, 1)
++
++        # Synchronize all devices before timing
++        # This ensures clean measurement in PP/TP scenarios
++        torch.npu.synchronize()
++
++        # In PP mode, we still run on all ranks to keep them synchronized
++        # but only the first rank's timing is used for scheduling decisions
++        is_first_pp_rank = get_pp_group().is_first_rank
++
++        start = time.perf_counter()
++
++        # Run real model forward with force_attention=True
++        # This ensures attention is actually executed, not skipped.
++        # Without force_attention, attn_metadata may be None and attention
++        # won't run, making profiling results inaccurate.
++        # _dummy_run handles PP internally (intermediate tensors, etc.)
++        self.model_runner._dummy_run(
++            num_tokens=num_tokens,
++            force_attention=True,  # Critical: ensure attention is executed
++            profile_cpp=True,
++        )
++
++        # Synchronize after forward to ensure NPU operations complete
++        torch.npu.synchronize()
++
++        latency_ms = (time.perf_counter() - start) * 1000
++
++        # Log for debugging in PP mode
++        if not is_first_pp_rank:
++            logger.debug(
++                "[ProfilingChunk] PP rank %d: profiled %d tokens, latency=%.2f ms (not used)",
++                get_pp_group().rank_in_group,
++                num_tokens,
++                latency_ms,
++            )
++
++        return latency_ms
++
+     def get_kv_connector_handshake_metadata(self) -> dict | None:
+         """Get KV connector metadata from this worker if available."""
+         if not has_kv_transfer_group():
